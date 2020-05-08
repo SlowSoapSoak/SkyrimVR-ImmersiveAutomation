@@ -1,0 +1,4 @@
+LIBRARY	"immersive_sun_plugin"
+EXPORTS
+SKSEPlugin_Query
+SKSEPlugin_Load

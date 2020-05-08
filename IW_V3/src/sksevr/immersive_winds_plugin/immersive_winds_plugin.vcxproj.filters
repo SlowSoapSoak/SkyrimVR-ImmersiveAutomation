@@ -1,0 +1,25 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="ImmersiveWinds.cpp" />
+    <ClCompile Include="TPLinkSPHelper.cpp" />
+    <ClCompile Include="DeviceInfo.cpp" />
+    <ClCompile Include="Enumerations.cpp" />
+    <ClCompile Include="EndGameDetect.cpp" />
+    <ClCompile Include="SPScanner.cpp" />
+    <ClCompile Include="NetworkInterfaceInfo.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="ImmersiveWinds.h" />
+    <ClInclude Include="TPLinkSPHelper.h" />
+    <ClInclude Include="DeviceInfo.h" />
+    <ClInclude Include="Enumerations.h" />
+    <ClInclude Include="EndGameDetect.h" />
+    <ClInclude Include="SPScanner.h" />
+    <ClInclude Include="NetworkInterfaceInfo.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="ImmersiveWinds.def" />
+  </ItemGroup>
+</Project>
