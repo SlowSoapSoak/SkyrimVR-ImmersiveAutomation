@@ -9,6 +9,7 @@
     <ClCompile Include="EndGameDetect.cpp" />
     <ClCompile Include="SPScanner.cpp" />
     <ClCompile Include="NetworkInterfaceInfo.cpp" />
+    <ClCompile Include="MenuChecker.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ImmersiveWinds.h" />
@@ -18,6 +19,8 @@
     <ClInclude Include="EndGameDetect.h" />
     <ClInclude Include="SPScanner.h" />
     <ClInclude Include="NetworkInterfaceInfo.h" />
+    <ClInclude Include="MenuChecker.h" />
+    <ClInclude Include="Sky.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ImmersiveWinds.def" />

@@ -28,7 +28,7 @@ public:
 	bool OpenConnection();
 	void CloseConnection();
 
-	bool LoadIPConfigFromFile();
+	bool LoadIPConfigFromFile(int &useUDP, std::string &defaultIp);
 
 
 	void SwitchRelayState(long on);

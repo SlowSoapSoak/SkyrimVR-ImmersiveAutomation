@@ -14,7 +14,7 @@
     <ProjectGuid>{E87324DD-F104-EA1B-6887-C9032934A3C3}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>immersive_sun_plugin</RootNamespace>
-    <WindowsTargetPlatformVersion>8.1</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.18362.0</WindowsTargetPlatformVersion>
     <SccProjectName>
     </SccProjectName>
     <SccLocalPath>
@@ -32,7 +32,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v141</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
@@ -56,7 +56,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
     <TargetName>immersive_sun_plugin</TargetName>
-    <OutDir>C:\Users\me\AppData\Local\ModOrganizer\SkyrimVR\mods\Immersive Sun VR %28Home Automation%29\skse\plugins</OutDir>
+    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>

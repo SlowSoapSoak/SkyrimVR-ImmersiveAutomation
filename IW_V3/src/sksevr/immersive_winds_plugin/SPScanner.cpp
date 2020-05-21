@@ -56,8 +56,8 @@ std::string SPScanner::ScanForTpPlug(std::string plugName)
 
 	//std::future<std::string> ret = std::async(&listenForUDPAnswers, plugName);
 	
-
-	for (int k = 0; k < interfaces.size(); k++) {
+	for (int k = 0; k < interfaces.size(); k++) 
+	{
 		SOCKET sock = socket(AF_INET, SOCK_DGRAM, 0);
 		if (sock == INVALID_SOCKET)
 		{
@@ -74,7 +74,8 @@ std::string SPScanner::ScanForTpPlug(std::string plugName)
 		struct sockaddr_in Sender_addr;
 		Sender_addr.sin_family = AF_INET;
 		Sender_addr.sin_port = htons(9999);
-		Sender_addr.sin_addr.s_addr = inet_addr(interfaces.at(k).Broadcast.c_str());
+		//Sender_addr.sin_addr.s_addr = inet_addr(interfaces.at(k).Broadcast.c_str());
+		inet_pton(AF_INET, interfaces.at(k).Broadcast.c_str(), &Sender_addr.sin_addr);
 
 		struct sockaddr_in Recv_addr;
 		Recv_addr.sin_family = AF_INET;
@@ -88,7 +89,7 @@ std::string SPScanner::ScanForTpPlug(std::string plugName)
 		}
 
 		int timeout = 3000;
-		setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(int));
+		setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
 		if (sendto(sock, broadCastMsgEnc.c_str(), broadCastMsgEnc.length(), 0, (sockaddr *)&Sender_addr, sizeof(Sender_addr)) < 0)
 		{
 			closesocket(sock);
@@ -125,7 +126,8 @@ std::string SPScanner::ScanForTpPlug(std::string plugName)
 				if (endOfMsg != -1) {
 					recvMsg.resize(endOfMsg);
 				}
-				std::cout << "rebound: " << recvMsg << "\n";
+				//std::cout << "rebound: " << recvMsg << "\n";
+				_MESSAGE("Received: %s", recvMsg.c_str());
 				if (recvMsg.find("\"get_sysinfo\":{}") != std::string::npos) {
 					// ignore rebound
 					//_MESSAGE("ignore rebound");

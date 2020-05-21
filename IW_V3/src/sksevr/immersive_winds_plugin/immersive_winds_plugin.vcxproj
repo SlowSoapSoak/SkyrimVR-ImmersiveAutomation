@@ -14,7 +14,7 @@
     <ProjectGuid>{C456684A-56CF-E654-655D-98A564BE152D}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>immersive_winds_plugin</RootNamespace>
-    <WindowsTargetPlatformVersion>8.1</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.18362.0</WindowsTargetPlatformVersion>
     <SccProjectName>
     </SccProjectName>
     <SccLocalPath>
@@ -32,7 +32,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v141</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
@@ -56,7 +56,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
     <TargetName>immersive_winds_plugin</TargetName>
-    <OutDir>C:\Users\me\AppData\Local\ModOrganizer\SkyrimVR\mods\Immersive Winds VR %28Home Automation%29\skse\plugins\</OutDir>
+    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -118,6 +118,7 @@
     <ClCompile Include="Enumerations.cpp" />
     <ClCompile Include="ImmersiveWinds.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="MenuChecker.cpp" />
     <ClCompile Include="NetworkInterfaceInfo.cpp" />
     <ClCompile Include="SPScanner.cpp" />
     <ClCompile Include="TPLinkSPHelper.cpp" />
@@ -138,7 +139,9 @@
     <ClInclude Include="EndGameDetect.h" />
     <ClInclude Include="Enumerations.h" />
     <ClInclude Include="ImmersiveWinds.h" />
+    <ClInclude Include="MenuChecker.h" />
     <ClInclude Include="NetworkInterfaceInfo.h" />
+    <ClInclude Include="Sky.h" />
     <ClInclude Include="SPScanner.h" />
     <ClInclude Include="TPLinkSPHelper.h" />
   </ItemGroup>

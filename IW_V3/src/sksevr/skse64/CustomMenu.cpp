@@ -69,7 +69,7 @@ void CustomMenu::Accept(CallbackProcessor * processor)
 void CustomMenu::Render()
 {
 	if(view) {
-		view->Render();
+		view->Display();
 #ifdef _CUSTOMMENU_ITEMDISPLAY
 		CALL_MEMBER_FN(Inventory3DManager::GetSingleton(), Render)();
 #endif

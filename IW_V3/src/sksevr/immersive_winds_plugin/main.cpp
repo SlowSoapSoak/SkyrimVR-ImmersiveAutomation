@@ -12,7 +12,9 @@
 #include "EndGameDetect.h"
 
 #include "SPScanner.h"
+#include "skse64/PapyrusEvents.h"
 
+static SKSEMessagingInterface		* g_messaging = NULL;
 static PluginHandle					g_pluginHandle = kPluginHandle_Invalid;
 static SKSEPapyrusInterface         * g_papyrus = NULL;
 static SKSEObjectInterface         * g_object = NULL;
@@ -21,7 +23,6 @@ static EndGameDetect endGameDetect;
 
 #pragma comment(lib, "Ws2_32.lib")
 
-
 extern "C" {
 
 	bool SKSEPlugin_Query(const SKSEInterface * skse, PluginInfo * info) {	// Called by SKSE to learn about this plugin and check that it's safe to load it
@@ -29,7 +30,7 @@ extern "C" {
 		gLog.SetPrintLevel(IDebugLog::kLevel_Error);
 		gLog.SetLogLevel(IDebugLog::kLevel_DebugMessage);
 
-		std::string logMsg("Immersive Winds V: ");
+		std::string logMsg("Immersive Winds VR: ");
 		logMsg.append(ImmersiveWinds::MOD_VERSION);
 		_MESSAGE(logMsg.c_str());
 
@@ -37,7 +38,7 @@ extern "C" {
 		// populate info structure
 		info->infoVersion = PluginInfo::kInfoVersion;
 		info->name = "ImmersiveWindsPluginScript";
-		info->version = 010101; // 1.1.1
+		info->version = 010200; // 1.2.0
 
 		// store plugin handle so we can identify ourselves later
 		g_pluginHandle = skse->GetPluginHandle();
@@ -65,6 +66,30 @@ extern "C" {
 		return true;
 	}
 
+	//Listener for SKSE Messages
+	void OnSKSEMessage(SKSEMessagingInterface::Message* msg)
+	{
+		if (msg)
+		{
+			if (msg->type == SKSEMessagingInterface::kMessage_DataLoaded)
+			{
+				ImmersiveWinds::StartMod();
+			}
+			else if(msg->type == SKSEMessagingInterface::kMessage_NewGame)
+			{
+				ImmersiveWinds::ResetTeach();
+			}
+			else if (msg->type == SKSEMessagingInterface::kMessage_PreLoadGame)
+			{
+				ImmersiveWinds::ResetTeach();
+			}
+			else if (msg->type == SKSEMessagingInterface::kMessage_PostLoadGame)
+			{
+				ImmersiveWinds::ResetTeach();
+			}
+		}
+	}
+
 	bool SKSEPlugin_Load(const SKSEInterface * skse) {	// Called by SKSE to load this plugin
 		_MESSAGE("ImmersiveWindsPluginScript loaded");
 
@@ -72,13 +97,9 @@ extern "C" {
 		//g_object = (SKSEObjectInterface *)skse->QueryInterface(kInterface_Object);
 		//SKSEPersistentObjectStorage objects = g_object->GetPersistentObjectStorage();
 		//objects.AccessObject
+		g_messaging = (SKSEMessagingInterface*)skse->QueryInterface(kInterface_Messaging);
+		g_messaging->RegisterListener(g_pluginHandle, "SKSE", OnSKSEMessage);
 
-		//Check if the function registration was a success...
-		bool btest = g_papyrus->Register(ImmersiveWinds::RegisterFuncs);
-
-		if (btest) {
-			_MESSAGE("Register Succeeded");
-		}
 
 		return true;
 	}

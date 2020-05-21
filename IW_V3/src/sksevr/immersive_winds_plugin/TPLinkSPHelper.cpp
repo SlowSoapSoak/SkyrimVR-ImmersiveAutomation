@@ -56,7 +56,8 @@ bool TPLinkHelper::OpenConnection()
 
 	target.sin_family = AF_INET; // address family Internet
 	target.sin_port = htons(m_port); //Port to connect on
-	target.sin_addr.s_addr = inet_addr(m_ip); //Target IP
+	//target.sin_addr.s_addr = inet_addr(m_ip); //Target IP
+	inet_pton(AF_INET, m_ip, &target.sin_addr);
 
 	if (m_udp) {
 		ConnectSocket = socket(AF_INET, SOCK_DGRAM, 0);
@@ -68,8 +69,8 @@ bool TPLinkHelper::OpenConnection()
 		struct sockaddr_in Recv_addr;
 		Recv_addr.sin_family = AF_INET;
 		Recv_addr.sin_port = htons(9999);
-		Recv_addr.sin_addr.s_addr = inet_addr(m_ip);
-
+		//Recv_addr.sin_addr.s_addr = inet_addr(m_ip);
+		inet_pton(AF_INET, m_ip, &Recv_addr.sin_addr);
 
 		int timeout = 3000;
 		setsockopt(ConnectSocket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(int));
@@ -111,50 +112,55 @@ void TPLinkHelper::CloseConnection()
 	WSACleanup(); //Clean up Winsock
 }
 
-bool TPLinkHelper::LoadIPConfigFromFile()
+bool TPLinkHelper::LoadIPConfigFromFile(int &useUDP, std::string &defaultIp)
 {
-	CHAR my_documents[MAX_PATH];
-	HRESULT result = SHGetFolderPath(NULL, CSIDL_PERSONAL, NULL, SHGFP_TYPE_CURRENT, my_documents);
-	//_MESSAGE(my_documents);
-
-	std::string sExecPath(my_documents);
-	sExecPath.append("\\My Games\\Skyrim VR\\SKSE\\");
-	//_MESSAGE(sExecPath.c_str());
-	sExecPath.append("immersiveWinds.ini");
-	//std::cout << sExecPath << "\n";
-	//_MESSAGE(sExecPath.c_str());
-
-	if (INVALID_FILE_ATTRIBUTES == GetFileAttributesA(sExecPath.c_str()) && GetLastError() == ERROR_FILE_NOT_FOUND)
+	if(useUDP != -1 && !defaultIp.empty())
 	{
-		_MESSAGE(sExecPath.c_str());
-		_MESSAGE("file not found");
-		std::ofstream outfile(sExecPath);
-		//outfile << std::endl;
-		outfile.close();
+		m_udp = (useUDP > 0);
+		m_port = 9999;
+		m_sIp = defaultIp;
+		m_ip = (char*)m_sIp.c_str();
 	}
+	else
+	{
+		CHAR my_documents[MAX_PATH];
+		HRESULT result = SHGetFolderPath(NULL, CSIDL_PERSONAL, NULL, SHGFP_TYPE_CURRENT, my_documents);
+		//_MESSAGE(my_documents);
 
-	char iniFileBuffer[100];
-	GetPrivateProfileStringA("Internal", "sTpLinkPlugIp", "",
-		iniFileBuffer, 100, sExecPath.c_str());
-	std::string defaultIp(iniFileBuffer);
-	m_sIp = defaultIp;
-	std::cout << m_sIp;
-	//_MESSAGE(m_sIp.c_str());
+		std::string sExecPath(my_documents);
+		sExecPath.append("\\My Games\\Skyrim VR\\SKSE\\");
+		//_MESSAGE(sExecPath.c_str());
+		sExecPath.append("immersiveWinds.ini");
+		//std::cout << sExecPath << "\n";
+		//_MESSAGE(sExecPath.c_str());
 
-	unsigned int useUDP = GetPrivateProfileIntA("GeneralModConfig", "bUseUdp", 0, sExecPath.c_str());
-	if (useUDP > 0) {
-		m_udp = true;
+		if (INVALID_FILE_ATTRIBUTES == GetFileAttributesA(sExecPath.c_str()) && GetLastError() == ERROR_FILE_NOT_FOUND)
+		{
+			_MESSAGE(sExecPath.c_str());
+			_MESSAGE("file not found");
+			std::ofstream outfile(sExecPath);
+			//outfile << std::endl;
+			outfile.close();
+		}
+
+		char iniFileBuffer[100];
+		GetPrivateProfileStringA("Internal", "sTpLinkPlugIp", "",
+			iniFileBuffer, 100, sExecPath.c_str());
+		defaultIp = iniFileBuffer;
+		m_sIp = defaultIp;
+		std::cout << m_sIp;
+		//_MESSAGE(m_sIp.c_str());
+
+		useUDP = GetPrivateProfileIntA("GeneralModConfig", "bUseUdp", 0, sExecPath.c_str());
+		m_udp = (useUDP > 0);
+
+		std::cout << m_sIp;
+		//_MESSAGE(m_sIp.c_str());
+
+		m_port = 9999;
+		m_ip = (char*)m_sIp.c_str();
+		//_MESSAGE(m_ip);
 	}
-	else {
-		m_udp = false;
-	}
-	std::cout << m_sIp;
-	//_MESSAGE(m_sIp.c_str());
-
-	m_port = 9999;
-	m_ip = (char*)m_sIp.c_str();
-	//_MESSAGE(m_ip);
-
 	return m_sIp != "";
 }
 
@@ -182,7 +188,7 @@ int TPLinkHelper::SendAndReceiveEncoded(std::string messageSend, std::string& me
 	//_MESSAGE(sMsgSend.c_str());
 	answerLengthInternal = 1600;
 	char buf[DEFAULT_BUFLEN];
-	int code = SendAndReceive(sMsgSend.c_str(), vMsgSend.size(), buf, answerLengthInternal);
+	int code = SendAndReceive(sMsgSend.c_str(), sMsgSend.size(), buf, answerLengthInternal);
 	if (code) {
 		// return if unsuccessful
 		_MESSAGE("unsuccessful");
