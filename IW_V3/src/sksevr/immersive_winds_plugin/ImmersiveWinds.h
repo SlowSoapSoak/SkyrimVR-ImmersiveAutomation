@@ -189,6 +189,7 @@ namespace ImmersiveWinds
 	static bool _logsEnabled = false;
 	static std::string workingIp;
 	static int useUDP= -1;
+	static bool _noWindInMenu = true;
 
 	static std::atomic<bool> interiorCell = false;
 	static std::atomic<bool> teach = false;

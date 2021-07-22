@@ -231,6 +231,10 @@ namespace ImmersiveWinds {
 			WritePrivateProfileStringA("GeneralModConfig", "bLoggingEnabled", std::to_string(0).c_str(),
 				sExecPath.c_str());
 		}
+		if (iniFileContents.find("bNoWindInMenu") == std::string::npos) {
+			WritePrivateProfileStringA("GeneralModConfig", "bNoWindInMenu", std::to_string(0).c_str(),
+				sExecPath.c_str());
+		}
 
 		// write all IntermittendModeStrengthConfig vars
 		for (int i = 1; i < 7; i++) {
@@ -333,6 +337,8 @@ namespace ImmersiveWinds {
 		unsigned int bIntermittentModeEnabled = GetPrivateProfileIntA("GeneralModConfig", "bIntermittentModeEnabled", 0, sExecPath.c_str());
 		unsigned int bLoggingEnabled = GetPrivateProfileIntA("GeneralModConfig", "bLoggingEnabled", 0, sExecPath.c_str());
 		_logsEnabled = bLoggingEnabled > 0;
+		unsigned int bNoWindInMenu = GetPrivateProfileIntA("GeneralModConfig", "bNoWindInMenu", 0, sExecPath.c_str());
+		_noWindInMenu = bNoWindInMenu > 0;
 
 		std::vector<std::vector<float>> intermittendWindStrengthConfig;
 
@@ -539,14 +545,14 @@ namespace ImmersiveWinds {
 			resultingLevel = iOutsideBase;
 
 			// altitude mode
-			/*if (_altitude > iVeryHighAltitudeBegin) {
+			if (_altitude > iVeryHighAltitudeBegin) {
 				mod += iOutsideAltitudeVeryHighMod;
 				LOG("very high altitude!");
 			}
 			else if (_altitude > iHighAltitudeBegin) {
 				mod += iOutsideAltitudeHighMod;
 				LOG("high altitude!");
-			}*/
+			}
 
 			// daytime mod
 			
@@ -861,7 +867,7 @@ namespace ImmersiveWinds {
 				continue;
 			}
 
-			if (isGameStoppedNoDialogue())
+			if (isGameStoppedNoDialogue() && _noWindInMenu)
 			{
 				_currentSwitchState = 0; //No fan in menu.
 				Sleep(3000);
