@@ -114,6 +114,8 @@ namespace ImmersiveWinds
 		{ "LoadWaitSpinner", false }
 	});
 
+	std::atomic<bool> menuStopsGameNoDialogue(false);
+
 	//Menu open event functions
 	AllMenuEventHandler menuEvent;
 
@@ -135,6 +137,8 @@ namespace ImmersiveWinds
 				menuTypes[menuName] = false;
 			}
 		}
+
+		menuStopsGameNoDialogue = isGameStoppedNoDialogue();
 
 		return EventResult::kEvent_Continue;
 	}
