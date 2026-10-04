@@ -38,7 +38,7 @@ extern "C" {
 		// populate info structure
 		info->infoVersion = PluginInfo::kInfoVersion;
 		info->name = "ImmersiveSunPluginScript";
-		info->version = 010000;
+		info->version = 0x010000;
 
 		// store plugin handle so we can identify ourselves later
 		g_pluginHandle = skse->GetPluginHandle();

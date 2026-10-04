@@ -18,6 +18,7 @@ private:
 	int m_port;
 	bool m_udp;
 	bool m_loggingEnabled;
+	bool m_wsaStarted;
 
 public:
 

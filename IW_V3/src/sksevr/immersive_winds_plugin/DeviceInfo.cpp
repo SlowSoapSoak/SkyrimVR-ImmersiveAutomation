@@ -11,7 +11,7 @@ void DeviceInfo::LoadFromJson(std::string json)
 {
 	std::string msg = "LoadFromJson with: ";
 	msg.append(json);
-	_MESSAGE(msg.c_str());
+	_MESSAGE("%s", msg.c_str());
 
 	std::vector<std::string> valueKeys;
 	/*valueKeys.push_back("\"sw_ver\":");
@@ -42,7 +42,7 @@ void DeviceInfo::LoadFromJson(std::string json)
 			continue;
 		}
 		std::string jsonvalue = json.substr(value_sep + valueKeys.at(i).length(), line_sep - (value_sep + valueKeys.at(i).length()));
-		_MESSAGE(jsonvalue.c_str());
+		_MESSAGE("%s", jsonvalue.c_str());
 		
 		if (valueKeys.at(i) == "\"sw_ver\":") {
 			m_SoftwareVersion = jsonvalue.substr(1, jsonvalue.length() - 2); 
@@ -62,7 +62,7 @@ void DeviceInfo::LoadFromJson(std::string json)
 		else if (valueKeys.at(i) == "\"alias\":") {
 			m_Alias = jsonvalue.substr(1, jsonvalue.length() - 2);
 			_MESSAGE("found alias:");
-			_MESSAGE(m_Alias.c_str());
+			_MESSAGE("%s", m_Alias.c_str());
 		}
 	}
 

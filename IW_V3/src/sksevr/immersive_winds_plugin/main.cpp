@@ -32,13 +32,13 @@ extern "C" {
 
 		std::string logMsg("Immersive Winds VR: ");
 		logMsg.append(ImmersiveWinds::MOD_VERSION);
-		_MESSAGE(logMsg.c_str());
+		_MESSAGE("%s", logMsg.c_str());
 
 
 		// populate info structure
 		info->infoVersion = PluginInfo::kInfoVersion;
 		info->name = "ImmersiveWindsPluginScript";
-		info->version = 010200; // 1.2.0
+		info->version = 0x010200; // 1.2.0 (a leading 0 would make it an octal literal)
 
 		// store plugin handle so we can identify ourselves later
 		g_pluginHandle = skse->GetPluginHandle();
@@ -46,7 +46,7 @@ extern "C" {
 
 		std::string skseVers = "SKSE Version: ";
 		skseVers += std::to_string(skse->runtimeVersion);
-		_MESSAGE(skseVers.c_str());
+		_MESSAGE("%s", skseVers.c_str());
 
 		if (skse->isEditor)
 		{

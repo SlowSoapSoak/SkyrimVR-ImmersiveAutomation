@@ -116,7 +116,7 @@ std::string SPScanner::ScanForTpPlug(std::string plugName)
 				total += iResult;
 				printf("Bytes received: %d\n", iResult);
 				_MESSAGE("Bytes received");
-				std::string recvMsg = buf;
+				std::string recvMsg(buf, iResult); // buf is not null terminated
 				std::vector<char> vBroadCastAnswer(recvMsg.begin(), recvMsg.end());
 				vBroadCastAnswer = TPLinkHelper::DecryptMessage(vBroadCastAnswer, Enumerations::ProtocolType_UDP);
 				recvMsg = std::string(vBroadCastAnswer.begin(), vBroadCastAnswer.end());
@@ -182,9 +182,9 @@ int SPScanner::GetNetworkInterfaceInfos(std::vector<NetworkInterfaceInfo> & resu
 				info.NetMask = pAdapterInfo->IpAddressList.IpMask.String;
 				info.Broadcast = inet_ntoa(ia);
 				_MESSAGE("\nFound adapter:");
-				_MESSAGE(info.Ip.c_str());
-				_MESSAGE(info.NetMask.c_str());
-				_MESSAGE(info.Broadcast.c_str());
+				_MESSAGE("%s", info.Ip.c_str());
+				_MESSAGE("%s", info.NetMask.c_str());
+				_MESSAGE("%s", info.Broadcast.c_str());
 				results.push_back(info);
 			}
 		}
