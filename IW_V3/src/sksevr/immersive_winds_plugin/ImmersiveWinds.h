@@ -179,9 +179,10 @@ namespace ImmersiveWinds
 	};
 
 	static long _shoutLevel = 0;
-	static bool _keepRunning = true;
+	// shared with EndGameDetect, therefore extern (a static in this header would give every .cpp its own copy)
+	extern std::atomic<bool> _keepRunning;
 	static long _previousSwitchState = 0;
-	static long _currentSwitchState = 0;
+	extern std::atomic<long> _currentSwitchState;
 	static std::map<int, LevelValues> _levelValues;
 	static bool _s1Swap = true;
 	static clock_t _beginTime;

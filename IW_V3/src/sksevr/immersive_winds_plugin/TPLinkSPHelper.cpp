@@ -13,6 +13,7 @@ TPLinkHelper::TPLinkHelper(bool enableLogging)
 	m_ip = NULL;
 	m_port = 0;
 	m_udp = false;
+	m_wsaStarted = false;
 }
 
 bool TPLinkHelper::ConnectToHost(int PortNo, const char* IPAddress)
@@ -24,9 +25,8 @@ bool TPLinkHelper::ConnectToHost(int PortNo, const char* IPAddress)
 	m_port = PortNo;
 	m_ip = IPAddress;
 	bool canConnect = OpenConnection();
-	if (canConnect) {
-		CloseConnection();
-	}
+	// also clean up after a failed attempt, otherwise the socket and winsock stay open
+	CloseConnection();
 	return canConnect;
 }
 
@@ -43,6 +43,7 @@ bool TPLinkHelper::OpenConnection()
 	//Did something happen? TODO: log
 	if (error)
 		return false;
+	m_wsaStarted = true;
 
 	//Did we get the right Winsock version?
 	if (false)//(wsadata.wVersion != 0x0202)
@@ -63,7 +64,7 @@ bool TPLinkHelper::OpenConnection()
 		ConnectSocket = socket(AF_INET, SOCK_DGRAM, 0);
 		if (ConnectSocket == INVALID_SOCKET)
 		{
-			return ""; // error
+			return false; // error
 		}
 
 		struct sockaddr_in Recv_addr;
@@ -106,10 +107,15 @@ void TPLinkHelper::CloseConnection()
 {
 	//_MESSAGE("CloseConnection called");
 	//Close the socket if it exists
-	if (ConnectSocket)
+	if (ConnectSocket != INVALID_SOCKET) {
 		closesocket(ConnectSocket);
+		ConnectSocket = INVALID_SOCKET;
+	}
 
-	WSACleanup(); //Clean up Winsock
+	if (m_wsaStarted) {
+		WSACleanup(); //Clean up Winsock
+		m_wsaStarted = false;
+	}
 }
 
 bool TPLinkHelper::LoadIPConfigFromFile(int &useUDP, std::string &defaultIp)
@@ -136,7 +142,7 @@ bool TPLinkHelper::LoadIPConfigFromFile(int &useUDP, std::string &defaultIp)
 
 		if (INVALID_FILE_ATTRIBUTES == GetFileAttributesA(sExecPath.c_str()) && GetLastError() == ERROR_FILE_NOT_FOUND)
 		{
-			_MESSAGE(sExecPath.c_str());
+			_MESSAGE("%s", sExecPath.c_str());
 			_MESSAGE("file not found");
 			std::ofstream outfile(sExecPath);
 			//outfile << std::endl;
@@ -186,12 +192,16 @@ int TPLinkHelper::SendAndReceiveEncoded(std::string messageSend, std::string& me
 
 	std::string sMsgSend(vMsgSend.begin(), vMsgSend.end());
 	//_MESSAGE(sMsgSend.c_str());
-	answerLengthInternal = 1600;
+	answerLengthInternal = DEFAULT_BUFLEN;
 	char buf[DEFAULT_BUFLEN];
 	int code = SendAndReceive(sMsgSend.c_str(), sMsgSend.size(), buf, answerLengthInternal);
 	if (code) {
-		// return if unsuccessful
 		_MESSAGE("unsuccessful");
+	}
+	if (code || answerLengthInternal <= 0) {
+		// return if unsuccessful, buf contains no valid data then
+		messageAnswer.clear();
+		return 1;
 	}
 	/*std::string log = "answer length: ";
 	log.append(std::to_string(answerLengthInternal));
@@ -218,6 +228,8 @@ int TPLinkHelper::SendAndReceiveEncoded(std::string messageSend, std::string& me
 int TPLinkHelper::SendAndReceive(const char *sendbuf, int sendLen, char* recvbuf, int &recvbuflen)
 {
 	//_MESSAGE("SendAndReceive called");
+	const int capacity = recvbuflen;
+	recvbuflen = 0;
 	bool couldOpenConnection = OpenConnection();
 	if (!couldOpenConnection) {
 		std::string log = "Could not connect ";
@@ -228,6 +240,8 @@ int TPLinkHelper::SendAndReceive(const char *sendbuf, int sendLen, char* recvbuf
 			log.append(m_ip);
 		}
 		//_MESSAGE(log.c_str());
+		CloseConnection();
+		return 1;
 	}
 	else {
 		std::string log = "Could connect ";
@@ -250,8 +264,7 @@ int TPLinkHelper::SendAndReceive(const char *sendbuf, int sendLen, char* recvbuf
 
 			if (sendto(ConnectSocket, sendbuf, sendLen, 0, (sockaddr *)&Sender_addr, sizeof(Sender_addr)) < 0)
 			{
-				closesocket(ConnectSocket);
-				WSACleanup();
+				CloseConnection();
 				return 1;// error
 			}
 		}
@@ -261,8 +274,7 @@ int TPLinkHelper::SendAndReceive(const char *sendbuf, int sendLen, char* recvbuf
 			iResult = send(ConnectSocket, sendbuf, sendLen, 0); //(int)strlen(sendbuf)
 			if (iResult == SOCKET_ERROR) {
 				printf("send failed: %d\n", WSAGetLastError());
-				closesocket(ConnectSocket);
-				WSACleanup();
+				CloseConnection();
 				return 1;
 			}
 			printf("Bytes Sent: %ld\n", iResult);
@@ -278,21 +290,20 @@ int TPLinkHelper::SendAndReceive(const char *sendbuf, int sendLen, char* recvbuf
 		if (iResult == SOCKET_ERROR) {
 			//_MESSAGE("shutdown failed");
 			printf("shutdown failed: %d\n", WSAGetLastError());
-			closesocket(ConnectSocket);
-			WSACleanup();
+			CloseConnection();
 			return 1;
 		}
 
-		// Receive data until the server closes the connection
+		// Receive data until the server closes the connection or the buffer is full
 		int total = 0;
 		do {
 			if (m_udp) {
 				struct sockaddr_in Recv_addr;
 				socklen_t addrlen = sizeof(struct sockaddr_in);
-				iResult = recvfrom(ConnectSocket, recvbuf + total, recvbuflen, 0, (struct sockaddr *)&Recv_addr, &addrlen);
+				iResult = recvfrom(ConnectSocket, recvbuf + total, capacity - total, 0, (struct sockaddr *)&Recv_addr, &addrlen);
 			}
 			else {
-				iResult = recv(ConnectSocket, recvbuf + total, recvbuflen, 0);
+				iResult = recv(ConnectSocket, recvbuf + total, capacity - total, 0);
 			}
 			if (iResult > 0)
 			{
@@ -308,10 +319,10 @@ int TPLinkHelper::SendAndReceive(const char *sendbuf, int sendLen, char* recvbuf
 				if (m_loggingEnabled) {
 					std::string error("recv wsa error result: ");
 					error.append(std::to_string(WSAGetLastError()));
-					_MESSAGE(error.c_str());
+					_MESSAGE("%s", error.c_str());
 				}
 			}
-		} while (iResult > 0);
+		} while (iResult > 0 && total < capacity);
 		recvbuflen = total;
 		if (total > 0) {
 			if (m_loggingEnabled) {
@@ -441,12 +452,12 @@ void TPLinkHelper::SwitchLEDState(long on)
 	if (on == 1) {
 		std::string msg = "{\"system\":{\"set_led_off\":{\"state\":1}}}";
 		SendAndReceiveEncoded(msg, result);
-		_MESSAGE(result.c_str());
+		_MESSAGE("%s", result.c_str());
 	}
 	else {
 		std::string msg = "{\"system\":{\"set_led_off\":{\"state\":0}}}";
 		SendAndReceiveEncoded(msg, result);
-		_MESSAGE(result.c_str());
+		_MESSAGE("%s", result.c_str());
 	}
 }
 
@@ -457,7 +468,7 @@ DeviceInfo TPLinkHelper::GetSystemInfo()
 
 	std::string msg = "{\"system\":{\"get_sysinfo\":{}}}";
 	SendAndReceiveEncoded(msg, result);
-	_MESSAGE(result.c_str());
+	_MESSAGE("%s", result.c_str());
 
 	DeviceInfo info;
 	info.LoadFromJson(result);

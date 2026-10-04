@@ -1,8 +1,29 @@
 #include "ImmersiveWinds.h"
+#include <mutex>
 
 
 namespace ImmersiveWinds {
 
+	std::atomic<bool> _keepRunning(true);
+	std::atomic<long> _currentSwitchState(0);
+
+	// workingIp and useUDP are written by the scan thread and read by the switch threads
+	static std::mutex _connectionConfigMutex;
+
+	static const int SCAN_MAX_ATTEMPTS = 5;
+	static const int SCAN_RETRY_DELAY_MS = 10000;
+
+	bool LoadConnectionConfig(TPLinkHelper & tpLinkConn)
+	{
+		std::lock_guard<std::mutex> lock(_connectionConfigMutex);
+		return tpLinkConn.LoadIPConfigFromFile(useUDP, workingIp);
+	}
+
+	void SetWorkingIp(const std::string & ip)
+	{
+		std::lock_guard<std::mutex> lock(_connectionConfigMutex);
+		workingIp = ip;
+	}
 
 	std::string GetIniPath()
 	{
@@ -17,70 +38,49 @@ namespace ImmersiveWinds {
 
 	void ScanAndCheckConnection()
 	{
-
-		std::string plugName = "ImmersiveWindsPlug";
-		TPLinkHelper tpLinkConn(_logsEnabled);
-
-		std::string sExecPath = ImmersiveWinds::GetIniPath();
+		const std::string plugName = "ImmersiveWindsPlug";
+		const std::string sExecPath = ImmersiveWinds::GetIniPath();
 
 		char iniFileBuffer[100];
 		GetPrivateProfileStringA("Internal", "sTpLinkPlugIp", "",
 			iniFileBuffer, 100, sExecPath.c_str());
-		std::string defaultIp(iniFileBuffer);
-		LOG("READ ini file:");
-		LOG(defaultIp.c_str());
-		if (defaultIp.empty()) {
+		const std::string savedIp(iniFileBuffer);
+		LOG("READ ini file: %s", savedIp.c_str());
+
+		if (savedIp.empty()) {
 			LOG("no ip specified");
-			// search for device
-			// until 1 is found
-			// if one is found
-			// save new ip to ini file.
-			SPScanner scanner;
-			std::string ipOfDevice = scanner.ScanForTpPlug(plugName);
-			LOG("scan returned: %s", ipOfDevice.c_str());
-			defaultIp = ipOfDevice;
-			if (!ipOfDevice.empty()) {
-				WritePrivateProfileStringA("Internal", "sTpLinkPlugIp", defaultIp.c_str(), sExecPath.c_str());
-				workingIp = defaultIp;
-			}
-
-			//Console::ReadLine();
-		}		
-
-		bool successConnect = tpLinkConn.ConnectToHost(9999, (char*)defaultIp.c_str());
-		if (successConnect) {
-			LOG("Connect Succeeded");
-		}
-		if (!successConnect) {
-			LOG("no connection");
-			// search for device
-			// until 1 is found
-			// if one is found
-			// save new ip to ini file.
-			SPScanner scanner;
-			std::string ipOfDevice = scanner.ScanForTpPlug(plugName);
-			defaultIp = ipOfDevice;
-			WritePrivateProfileStringA("Internal", "sTpLinkPlugIp", defaultIp.c_str(), sExecPath.c_str());
-			workingIp = defaultIp;
-			//Console::ReadLine();
 		}
 		else {
-			// check if correct device:
-			tpLinkConn.LoadIPConfigFromFile(useUDP,workingIp);
-			DeviceInfo deviceInfo = tpLinkConn.GetSystemInfo();
-			if (deviceInfo.alias() != plugName) {
+			TPLinkHelper tpLinkConn(_logsEnabled);
+			if (!tpLinkConn.ConnectToHost(9999, savedIp.c_str())) {
+				LOG("no connection");
+			}
+			else {
+				LOG("Connect Succeeded");
+				// check if correct device:
+				if (LoadConnectionConfig(tpLinkConn) && tpLinkConn.GetSystemInfo().alias() == plugName) {
+					return;
+				}
 				LOG("wrong device");
-				// search for device
-				// until 1 is found
-				// if one is found
-				// save new ip to ini file.
-				SPScanner scanner;
-				std::string ipOfDevice = scanner.ScanForTpPlug(plugName);
-				defaultIp = ipOfDevice;
-				WritePrivateProfileStringA("Internal", "sTpLinkPlugIp", defaultIp.c_str(), sExecPath.c_str());
-				workingIp = defaultIp;
 			}
 		}
+
+		// search for the device until one is found and save its ip to the ini file.
+		// A failed scan keeps the saved ip, so a plug that is only temporarily offline is not forgotten.
+		for (int attempt = 1; attempt <= SCAN_MAX_ATTEMPTS && _keepRunning; attempt++) {
+			SPScanner scanner;
+			const std::string ipOfDevice = scanner.ScanForTpPlug(plugName);
+			LOG("scan %d returned: %s", attempt, ipOfDevice.c_str());
+			if (!ipOfDevice.empty()) {
+				WritePrivateProfileStringA("Internal", "sTpLinkPlugIp", ipOfDevice.c_str(), sExecPath.c_str());
+				SetWorkingIp(ipOfDevice);
+				return;
+			}
+			if (attempt < SCAN_MAX_ATTEMPTS) {
+				Sleep(SCAN_RETRY_DELAY_MS);
+			}
+		}
+		LOG_ERR("Could not find a plug named %s", plugName.c_str());
 	}
 
 	void SwitchStateControllThread() {
@@ -89,15 +89,19 @@ namespace ImmersiveWinds {
 
 		while (_keepRunning) 
 		{
-			if (_previousSwitchState != _currentSwitchState) {
+			// read the state once, it is changed by the weather thread
+			const long currentState = _currentSwitchState;
+			LevelValues & level = _levelValues[currentState];
+
+			if (_previousSwitchState != currentState) {
 				// state change detected!
 				// reset all state variables:
 				//std::cout << "var reset\n";
-				LOG("\nSwitching mode to %ld", _currentSwitchState);
+				LOG("\nSwitching mode to %ld", currentState);
 				
 				_s1Swap = true;
-				_levelValues[_currentSwitchState].counterLeaveCurrentState = 0;
-				_previousSwitchState = _currentSwitchState;
+				level.counterLeaveCurrentState = 0;
+				_previousSwitchState = currentState;
 				_beginTime = clock();
 			}
 
@@ -110,44 +114,44 @@ namespace ImmersiveWinds {
 			//}
 
 			// handle states:
-			if (_s1Swap && _levelValues[_currentSwitchState].counterLeaveOnMax != 0) {
-				if (_levelValues[_currentSwitchState].counterLeaveCurrentState == 0) {
+			if (_s1Swap && level.counterLeaveOnMax != 0) {
+				if (level.counterLeaveCurrentState == 0) {
 					//std::cout << "Mode" << currentSwitchState << ": Swap on\n";
-					if (_levelValues[_currentSwitchState].randomOnAdd > 0) {
-						_levelValues[_currentSwitchState].currentRandomOn = _levelValues[_currentSwitchState].distributionOn(_generator);
+					if (level.randomOnAdd > 0) {
+						level.currentRandomOn = level.distributionOn(_generator);
 					}
 					
 					LOG("SwitchingOn");
 					
 					TPLinkHelper tpLinkConn(_logsEnabled);
-					if (tpLinkConn.LoadIPConfigFromFile(useUDP, workingIp)) {
+					if (LoadConnectionConfig(tpLinkConn)) {
 						tpLinkConn.SwitchRelayState(1);
 					}
 				}
-				_levelValues[_currentSwitchState].counterLeaveCurrentState++;
-				if (float(clock() - _beginTime) >= (_levelValues[_currentSwitchState].counterLeaveOnMax + _levelValues[_currentSwitchState].currentRandomOn) * CLOCKS_PER_SEC) {
-					_levelValues[_currentSwitchState].counterLeaveCurrentState = 0;
+				level.counterLeaveCurrentState++;
+				if (float(clock() - _beginTime) >= (level.counterLeaveOnMax + level.currentRandomOn) * CLOCKS_PER_SEC) {
+					level.counterLeaveCurrentState = 0;
 					_beginTime = clock();
 					_s1Swap = false;
 				}
 			}
-			else if (_levelValues[_currentSwitchState].counterLeaveOffMax != 0) {
-				if (_levelValues[_currentSwitchState].counterLeaveCurrentState == 0) {
-					if (_levelValues[_currentSwitchState].randomOffAdd > 0) {
-						_levelValues[_currentSwitchState].currentRandomOff = _levelValues[_currentSwitchState].distributionOff(_generator);
+			else if (level.counterLeaveOffMax != 0) {
+				if (level.counterLeaveCurrentState == 0) {
+					if (level.randomOffAdd > 0) {
+						level.currentRandomOff = level.distributionOff(_generator);
 					}
 					
 					LOG("SwitchingOff");
 					
 					//std::cout << "Mode" << currentSwitchState << ": Swap off\n";
 					TPLinkHelper tpLinkConn(_logsEnabled);
-					if (tpLinkConn.LoadIPConfigFromFile(useUDP, workingIp)) {
+					if (LoadConnectionConfig(tpLinkConn)) {
 						tpLinkConn.SwitchRelayState(0);
 					}
 				}
-				_levelValues[_currentSwitchState].counterLeaveCurrentState++;
-				if (float(clock() - _beginTime) >= (_levelValues[_currentSwitchState].counterLeaveOffMax + _levelValues[_currentSwitchState].currentRandomOff) * CLOCKS_PER_SEC) {
-					_levelValues[_currentSwitchState].counterLeaveCurrentState = 0;
+				level.counterLeaveCurrentState++;
+				if (float(clock() - _beginTime) >= (level.counterLeaveOffMax + level.currentRandomOff) * CLOCKS_PER_SEC) {
+					level.counterLeaveCurrentState = 0;
 					_beginTime = clock();
 					_s1Swap = true;
 				}
@@ -171,28 +175,6 @@ namespace ImmersiveWinds {
 		GetPrivateProfileStringA("Internal", "sModVersion", "",
 			iniFileBuffer, 100, sExecPath.c_str());
 		std::string sCurrentVersion(iniFileBuffer);
-		if (sCurrentVersion != MOD_VERSION) { // update code
-		//	// older version 
-		//	// read old data
-		//	unsigned int useUDP = GetPrivateProfileIntA("ImmersiveWinds", "useUdp", 0, sExecPath.c_str());
-		//	unsigned int bIntermittentModeEnabled = GetPrivateProfileIntA("ImmersiveWinds", "bIntermittentModeEnabled", 0, sExecPath.c_str());
-		//	GetPrivateProfileStringA("ImmersiveWinds", "adapterIp", "",
-		//		iniFileBuffer, 100, sExecPath.c_str());
-		//	std::string adapterIp(iniFileBuffer);
-
-		//	// delete old contents
-		//	std::ofstream ofs;
-		//	ofs.open(sExecPath, std::ofstream::out | std::ofstream::trunc);
-		//	ofs.close();
-
-		//	//LOG((std::string(" old useUdp :") + std::to_string(useUDP)).c_str());
-
-		//	// write new content using previous settings
-		//	WritePrivateProfileStringA("Internal", "sTpLinkPlugIp", adapterIp.c_str(), sExecPath.c_str());
-			WritePrivateProfileStringA("GeneralModConfig", "bUseUdp", std::to_string(1).c_str(), sExecPath.c_str());
-			//WritePrivateProfileStringA("GeneralModConfig", "bIntermittentModeEnabled", std::to_string(bIntermittentModeEnabled).c_str(), sExecPath.c_str());
-		}
-
 
 		std::ifstream iniFileContentStream(sExecPath);
 		std::string iniFileContents;
@@ -460,7 +442,7 @@ namespace ImmersiveWinds {
 		TPLinkHelper tpLinkConn(_logsEnabled);
 
 		// load the ip for the connection
-		tpLinkConn.LoadIPConfigFromFile(useUDP,workingIp);
+		LoadConnectionConfig(tpLinkConn);
 		if (state >= 1) {
 			tpLinkConn.SwitchRelayState(1);
 		}
@@ -878,6 +860,7 @@ namespace ImmersiveWinds {
 
 			if (!cell)
 			{
+				Sleep(1000);
 				continue;
 			}
 
@@ -979,6 +962,6 @@ namespace ImmersiveWinds {
 		vsprintf_s(logBuffer, sizeof(logBuffer), fmt, args);
 		va_end(args);
 
-		_MESSAGE(logBuffer);
+		_MESSAGE("%s", logBuffer);
 	}	
 }
