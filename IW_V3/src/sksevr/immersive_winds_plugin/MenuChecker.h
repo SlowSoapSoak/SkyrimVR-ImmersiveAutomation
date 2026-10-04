@@ -3,6 +3,7 @@
 
 #include "skse64/PapyrusVM.h"
 #include <unordered_map>
+#include <atomic>
 
 
 namespace ImmersiveWinds
@@ -16,6 +17,9 @@ namespace ImmersiveWinds
 	bool isGameStopped();
 
 	bool isGameStoppedNoDialogue();
+
+	// result of isGameStoppedNoDialogue(), updated on every menu event so other threads can read it safely
+	extern std::atomic<bool> menuStopsGameNoDialogue;
 
 	class AllMenuEventHandler : public BSTEventSink <MenuOpenCloseEvent> {
 	public:

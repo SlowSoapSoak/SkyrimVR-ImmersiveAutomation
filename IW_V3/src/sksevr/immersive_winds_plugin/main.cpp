@@ -18,6 +18,7 @@ static SKSEMessagingInterface		* g_messaging = NULL;
 static PluginHandle					g_pluginHandle = kPluginHandle_Invalid;
 static SKSEPapyrusInterface         * g_papyrus = NULL;
 static SKSEObjectInterface         * g_object = NULL;
+static SKSETaskInterface           * g_task = NULL;
 static EndGameDetect endGameDetect;
 
 
@@ -73,7 +74,7 @@ extern "C" {
 		{
 			if (msg->type == SKSEMessagingInterface::kMessage_DataLoaded)
 			{
-				ImmersiveWinds::StartMod();
+				ImmersiveWinds::StartMod(g_task);
 			}
 			else if(msg->type == SKSEMessagingInterface::kMessage_NewGame)
 			{
@@ -94,6 +95,7 @@ extern "C" {
 		_MESSAGE("ImmersiveWindsPluginScript loaded");
 
 		g_papyrus = (SKSEPapyrusInterface *)skse->QueryInterface(kInterface_Papyrus);
+		g_task = (SKSETaskInterface *)skse->QueryInterface(kInterface_Task);
 		//g_object = (SKSEObjectInterface *)skse->QueryInterface(kInterface_Object);
 		//SKSEPersistentObjectStorage objects = g_object->GetPersistentObjectStorage();
 		//objects.AccessObject

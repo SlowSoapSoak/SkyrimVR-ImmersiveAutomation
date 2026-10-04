@@ -1,4 +1,6 @@
 #include "ImmersiveWinds.h"
+#include "skse64/PluginAPI.h"
+#include "skse64/GameThreads.h"
 #include <mutex>
 
 
@@ -12,6 +14,19 @@ namespace ImmersiveWinds {
 
 	static const int SCAN_MAX_ATTEMPTS = 5;
 	static const int SCAN_RETRY_DELAY_MS = 10000;
+	static const int WEATHER_CHECK_INTERVAL_MS = 3000;
+	// the relay state is sent again after this time, in case a (udp) message got lost or the plug restarted
+	static const float RELAY_RESEND_INTERVAL_SECONDS = 15.0f;
+
+	static SKSETaskInterface * g_task = nullptr;
+	static std::atomic<bool> _weatherTaskPending(false);
+	static std::atomic<bool> _scanFinished(false);
+	static std::chrono::steady_clock::time_point _lastRelaySend;
+
+	float SecondsSince(const std::chrono::steady_clock::time_point & start)
+	{
+		return std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
+	}
 
 	bool LoadConnectionConfig(TPLinkHelper & tpLinkConn)
 	{
@@ -83,9 +98,26 @@ namespace ImmersiveWinds {
 		LOG_ERR("Could not find a plug named %s", plugName.c_str());
 	}
 
+	void ScanThread()
+	{
+		ScanAndCheckConnection();
+		_scanFinished = true;
+	}
+
+	void SendRelayState(long on)
+	{
+		TPLinkHelper tpLinkConn(_logsEnabled);
+		if (LoadConnectionConfig(tpLinkConn)) {
+			tpLinkConn.SwitchRelayState(on);
+		}
+		_lastRelaySend = std::chrono::steady_clock::now();
+	}
+
 	void SwitchStateControllThread() {
-		// delay execution by 8 seconds to give time to scan
-		Sleep(8000);
+		// wait until the plug was found, otherwise the first switch commands would get lost
+		while (!_scanFinished && _keepRunning) {
+			Sleep(100);
+		}
 
 		while (_keepRunning) 
 		{
@@ -102,7 +134,7 @@ namespace ImmersiveWinds {
 				_s1Swap = true;
 				level.counterLeaveCurrentState = 0;
 				_previousSwitchState = currentState;
-				_beginTime = clock();
+				_beginTime = std::chrono::steady_clock::now();
 			}
 
 			//if (_shoutLevel > 0) {
@@ -123,15 +155,15 @@ namespace ImmersiveWinds {
 					
 					LOG("SwitchingOn");
 					
-					TPLinkHelper tpLinkConn(_logsEnabled);
-					if (LoadConnectionConfig(tpLinkConn)) {
-						tpLinkConn.SwitchRelayState(1);
-					}
+					SendRelayState(1);
+				}
+				else if (SecondsSince(_lastRelaySend) >= RELAY_RESEND_INTERVAL_SECONDS) {
+					SendRelayState(1);
 				}
 				level.counterLeaveCurrentState++;
-				if (float(clock() - _beginTime) >= (level.counterLeaveOnMax + level.currentRandomOn) * CLOCKS_PER_SEC) {
+				if (SecondsSince(_beginTime) >= level.counterLeaveOnMax + level.currentRandomOn) {
 					level.counterLeaveCurrentState = 0;
-					_beginTime = clock();
+					_beginTime = std::chrono::steady_clock::now();
 					_s1Swap = false;
 				}
 			}
@@ -144,15 +176,15 @@ namespace ImmersiveWinds {
 					LOG("SwitchingOff");
 					
 					//std::cout << "Mode" << currentSwitchState << ": Swap off\n";
-					TPLinkHelper tpLinkConn(_logsEnabled);
-					if (LoadConnectionConfig(tpLinkConn)) {
-						tpLinkConn.SwitchRelayState(0);
-					}
+					SendRelayState(0);
+				}
+				else if (SecondsSince(_lastRelaySend) >= RELAY_RESEND_INTERVAL_SECONDS) {
+					SendRelayState(0);
 				}
 				level.counterLeaveCurrentState++;
-				if (float(clock() - _beginTime) >= (level.counterLeaveOffMax + level.currentRandomOff) * CLOCKS_PER_SEC) {
+				if (SecondsSince(_beginTime) >= level.counterLeaveOffMax + level.currentRandomOff) {
 					level.counterLeaveCurrentState = 0;
-					_beginTime = clock();
+					_beginTime = std::chrono::steady_clock::now();
 					_s1Swap = true;
 				}
 			}
@@ -678,10 +710,11 @@ namespace ImmersiveWinds {
 		// int the settings first - very important
 		WriteDefaultsToIniFile();
 		LoadSettings();
+		_generator.seed(std::random_device()());
 
 		//LOG("Load settings");
 		// start scan thread
-		std::thread t(ScanAndCheckConnection);
+		std::thread t(ScanThread);
 		t.detach();
 
 		/*std::thread t3(StartConnection);
@@ -692,6 +725,10 @@ namespace ImmersiveWinds {
 		// start thread for plug control (delayed)
 		std::thread t2(SwitchStateControllThread);
 		t2.detach();
+
+		// start thread that checks the game state
+		std::thread t3(WeatherCheck);
+		t3.detach();
 	}
 
 	bool PlayerKnows(TESForm* form)
@@ -832,98 +869,113 @@ namespace ImmersiveWinds {
 		TeachWordNative((*g_skyrimVM)->GetClassRegistry(), 0, NULL, wop);
 	}
 
+	// Reads the game state (player, cell, weather, shout effects) and updates the wind level.
+	// Calls into the engine, so it must run on the game's main thread (see WeatherCheckTask).
+	void UpdateFromGameState()
+	{
+		if (!(*g_thePlayer) || !(*g_thePlayer)->loadedState)
+		{
+			return;
+		}
+
+		if (menuStopsGameNoDialogue && _noWindInMenu)
+		{
+			_currentSwitchState = 0; //No fan in menu.
+			return;
+		}
+
+		TESObjectCELL* cell = (*g_thePlayer)->parentCell;
+
+		if (!cell)
+		{
+			return;
+		}
+
+		if (WordRazen && WordGan)
+		{
+			if (!teach.load())
+			{
+				if (!PlayerKnows(LookupFormByID(WordRazen->formID)))
+				{
+					LOG("Player doesn't know the word.");
+					if (ImmersiveWindsCallShout)
+					{
+						ActorAddShoutNative((*g_thePlayer), ImmersiveWindsCallShout);
+						TeachWordOfPower(WordRazen);
+						TeachWordOfPower(WordGan);
+						UnlockWordOfPower(WordRazen);
+						UnlockWordOfPower(WordGan);
+						LOG("Words learned and unlocked.");
+					}
+				}
+				else
+				{
+					LOG("Player knows the word.");
+				}
+				teach.store(true);
+			}
+			const long shoutLevel = CheckShoutEffects();
+			if(_shoutLevel != shoutLevel)
+			{
+				if(shoutLevel > 0)
+				{
+					TriggerShout(shoutLevel);
+				}
+				else
+				{
+					EndShout();
+				}
+			}
+		}
+
+		const bool isInterior = !(cell->unk120) || (std::find(notExteriorWorlds.begin(), notExteriorWorlds.end(), cell->unk120->formID) != notExteriorWorlds.end()); //Interior Cell
+		interiorCell.store(isInterior);
+
+		const auto skyPtr = *g_SkyPtr;
+		if (skyPtr != nullptr && skyPtr->currentWeather != nullptr)
+		{				
+			UpdateNativeWindState(isInterior, (*g_thePlayer)->pos.z, GetClassification(skyPtr->currentWeather), (*g_thePlayer)->currentLocation, skyPtr->timeOfDay, GetSunGlare(skyPtr->currentWeather), cell->formID, skyPtr->currentWeather->formID, GetWindSpeed(skyPtr->currentWeather));
+		}
+	}
+
+	class WeatherCheckTask : public TaskDelegate
+	{
+	public:
+		virtual void Run()
+		{
+			UpdateFromGameState();
+			_weatherTaskPending = false;
+		}
+
+		virtual void Dispose()
+		{
+			delete this;
+		}
+	};
+
+	// Background timer: queues UpdateFromGameState on the main thread every few seconds.
 	void WeatherCheck()
 	{
-		TESObjectCELL* cell = nullptr;
-				
-		int classification = 0;
-
-		bool isInterior = false;
-
-		while (true)
+		while (_keepRunning)
 		{
-			if (!(*g_thePlayer) || !(*g_thePlayer)->loadedState)
+			if (menuStopsGameNoDialogue && _noWindInMenu)
 			{
-				//LOG_INFO("player null. Waiting for 5seconds");
-				Sleep(5000);
-				continue;
-			}
-
-			if (isGameStoppedNoDialogue() && _noWindInMenu)
-			{
+				// also handled here, so the fan stops even if the game does not process tasks while the menu is open
 				_currentSwitchState = 0; //No fan in menu.
-				Sleep(3000);
-				continue;
 			}
-
-			cell = (*g_thePlayer)->parentCell;
-
-			if (!cell)
+			else if (g_task)
 			{
-				Sleep(1000);
-				continue;
-			}
-
-			if (WordRazen && WordGan)
-			{
-				if (!teach.load())
+				// only one check at a time, so tasks do not pile up while the game does not process them (e.g. loading screens)
+				if (!_weatherTaskPending.exchange(true))
 				{
-					if (!PlayerKnows(LookupFormByID(WordRazen->formID)))
-					{
-						LOG("Player doesn't know the word.");
-						if (ImmersiveWindsCallShout)
-						{
-							ActorAddShoutNative((*g_thePlayer), ImmersiveWindsCallShout);
-							TeachWordOfPower(WordRazen);
-							TeachWordOfPower(WordGan);
-							UnlockWordOfPower(WordRazen);
-							UnlockWordOfPower(WordGan);
-							LOG("Words learned and unlocked.");
-						}
-					}
-					else
-					{
-						LOG("Player knows the word.");
-					}
-					teach.store(true);
+					g_task->AddTask(new WeatherCheckTask());
 				}
-				const long shoutLevel = CheckShoutEffects();
-				if(_shoutLevel != shoutLevel)
-				{
-					if(shoutLevel > 0)
-					{
-						TriggerShout(shoutLevel);
-					}
-					else
-					{
-						EndShout();
-					}
-				}
-			}
-
-			if (!(cell->unk120) || (std::find(notExteriorWorlds.begin(), notExteriorWorlds.end(), cell->unk120->formID) != notExteriorWorlds.end())) //Interior Cell
-			{
-				isInterior = true;
-				interiorCell.store(true);
 			}
 			else
 			{
-				isInterior = false;
-				interiorCell.store(false);
+				UpdateFromGameState();
 			}
-			
-			const auto skyPtr = *g_SkyPtr;
-			if (skyPtr != nullptr && skyPtr->currentWeather != nullptr)
-			{				
-				UpdateNativeWindState(isInterior, (*g_thePlayer)->pos.z, GetClassification(skyPtr->currentWeather), (*g_thePlayer)->currentLocation, skyPtr->timeOfDay, GetSunGlare(skyPtr->currentWeather), cell->formID, skyPtr->currentWeather->formID, GetWindSpeed(skyPtr->currentWeather));
-
-				Sleep(3000);
-			}
-			else
-			{
-				//LOG_INFO("Sky is null. waiting for 5 seconds.");
-				Sleep(5000);
-			}
+			Sleep(WEATHER_CHECK_INTERVAL_MS);
 		}
 	}
 
@@ -933,8 +985,14 @@ namespace ImmersiveWinds {
 	}
 
 	//This function is used to initialize the mod.
-	void StartMod()
+	void StartMod(SKSETaskInterface * taskInterface)
 	{
+		g_task = taskInterface;
+		if (!g_task)
+		{
+			LOG_ERR("Task interface not available, game state is read from a background thread.");
+		}
+
 		SafeWriteJump(addressStart.GetUIntPtr(), addressEnd.GetUIntPtr());
 
 		MenuManager * menuManager = MenuManager::GetSingleton();
@@ -943,8 +1001,7 @@ namespace ImmersiveWinds {
 
 		teach.store(false);
 		FillFormIds();
-		std::thread t7(WeatherCheck);
-		t7.detach();
+		// starts all threads, after the settings are loaded
 		InitBgThread();
 	}
 
