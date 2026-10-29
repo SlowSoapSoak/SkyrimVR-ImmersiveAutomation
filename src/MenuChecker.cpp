@@ -117,9 +117,12 @@ namespace ImmersiveWinds
 	//Menu open event functions
 	AllMenuEventHandler menuEvent;
 
-	EventResult AllMenuEventHandler::ReceiveEvent(MenuOpenCloseEvent * evn, EventDispatcher<MenuOpenCloseEvent> * dispatcher)
+	RE::BSEventNotifyControl AllMenuEventHandler::ProcessEvent(const RE::MenuOpenCloseEvent * evn, RE::BSTEventSource<RE::MenuOpenCloseEvent> * dispatcher)
 	{
-		const char * menuName = evn->menuName.data;
+		if (!evn)
+			return RE::BSEventNotifyControl::kContinue;
+
+		const char * menuName = evn->menuName.c_str();
 
 		if (evn->opening) //Menu opened
 		{
@@ -136,7 +139,7 @@ namespace ImmersiveWinds
 			}
 		}
 
-		return EventResult::kEvent_Continue;
+		return RE::BSEventNotifyControl::kContinue;
 	}
 
 	bool isGameStopped()

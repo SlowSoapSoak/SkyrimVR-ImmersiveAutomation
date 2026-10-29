@@ -25,15 +25,11 @@ namespace ImmersiveWinds {
 		workingIp = ip;
 	}
 
+	// My Games\<Skyrim Special Edition|Skyrim VR|...>\SKSE\immersiveWinds.ini, matching the running game
 	std::string GetIniPath()
 	{
-		CHAR my_documents[MAX_PATH];
-		HRESULT result = SHGetFolderPath(NULL, CSIDL_PERSONAL, NULL, SHGFP_TYPE_CURRENT, my_documents);
-
-		std::string sExecPath(my_documents);
-		sExecPath.append("\\My Games\\Skyrim VR\\SKSE\\");
-		sExecPath.append("immersiveWinds.ini");
-		return sExecPath;
+		const auto dir = SKSE::log::log_directory();
+		return dir ? (*dir / "immersiveWinds.ini").string() : "immersiveWinds.ini";
 	}
 
 	void ScanAndCheckConnection()
@@ -453,12 +449,12 @@ namespace ImmersiveWinds {
 
 	float GetWindSpeed(TESWeather* thisWeather)
 	{
-		return (thisWeather) ? (thisWeather->general.windSpeed / 256.0) : 0.0;
+		return (thisWeather) ? (thisWeather->data.windSpeed / 256.0f) : 0.0f;
 	}
 
 	float GetSunGlare(TESWeather* thisWeather)
 	{
-		return (thisWeather) ? (thisWeather->general.sunGlare) : 0.0;
+		return (thisWeather) ? static_cast<float>(thisWeather->data.sunGlare) : 0.0f;
 	}
 
 	void UpdateNativeWindStateInternal()
@@ -471,17 +467,17 @@ namespace ImmersiveWinds {
 
 			if (_currentLocation)
 			{
-				if (_currentLocation->keyword.HasKeyword(keywordLocTypeDwelling) // dwelling
-					|| _currentLocation->keyword.HasKeyword(keywordLocTypeFarm) // farm
-					|| _currentLocation->keyword.HasKeyword(keywordLocTypeGuild) // guild
-					|| _currentLocation->keyword.HasKeyword(keywordLocTypeInn) // inn (Gasthaus)
-					|| _currentLocation->keyword.HasKeyword(keywordLocTypeJail) // jail
-					|| _currentLocation->keyword.HasKeyword(keywordLocTypeLumberMill) // lumber mill
-					|| _currentLocation->keyword.HasKeyword(keywordLocTypeStewardsDwelling) // steward dwelling
-					|| _currentLocation->keyword.HasKeyword(keywordLocTypeStore) // store
-					|| _currentLocation->keyword.HasKeyword(keywordLocTypePlayerHouse) // player house
-					|| _currentLocation->keyword.HasKeyword(keywordLocTypeHouse) // house
-					|| _currentLocation->keyword.HasKeyword(keywordLocTypeCastle) // castle
+				if (_currentLocation->HasKeyword(keywordLocTypeDwelling) // dwelling
+					|| _currentLocation->HasKeyword(keywordLocTypeFarm) // farm
+					|| _currentLocation->HasKeyword(keywordLocTypeGuild) // guild
+					|| _currentLocation->HasKeyword(keywordLocTypeInn) // inn (Gasthaus)
+					|| _currentLocation->HasKeyword(keywordLocTypeJail) // jail
+					|| _currentLocation->HasKeyword(keywordLocTypeLumberMill) // lumber mill
+					|| _currentLocation->HasKeyword(keywordLocTypeStewardsDwelling) // steward dwelling
+					|| _currentLocation->HasKeyword(keywordLocTypeStore) // store
+					|| _currentLocation->HasKeyword(keywordLocTypePlayerHouse) // player house
+					|| _currentLocation->HasKeyword(keywordLocTypeHouse) // house
+					|| _currentLocation->HasKeyword(keywordLocTypeCastle) // castle
 					) {
 					resultingLevel = iInsideHouseBase;
 				}
@@ -489,32 +485,32 @@ namespace ImmersiveWinds {
 					// dungeon base is the default if house was not detected.
 					resultingLevel = iInsideDungeonBase;
 
-					//if (_currentLocation->keyword.HasKeyword(keywordLocSetNordicRuin) // nordic ruin
-					//	|| _currentLocation->keyword.HasKeyword(keywordLocSetDwarvenRuin) // dwarwen ruin
-					//	|| _currentLocation->keyword.HasKeyword(keywordLocTypeDungeon) // dungeon
-					//	|| _currentLocation->keyword.HasKeyword(keywordLocTypeDragonPriestLair) // dragon priest lair
-					//	|| _currentLocation->keyword.HasKeyword(keywordLocTypeDragonLair) // dragon lair
-					//	|| _currentLocation->keyword.HasKeyword(keywordLocTypeDraugrCrypt) // draugr crypt
-					//	|| _currentLocation->keyword.HasKeyword(keywordLocTypeFalmerHive) // falmer hive
-					//	|| _currentLocation->keyword.HasKeyword(keywordLocTypeMine) // mine
-					//	|| _currentLocation->keyword.HasKeyword(keywordLocTypeTemple) // temple
+					//if (_currentLocation->HasKeyword(keywordLocSetNordicRuin) // nordic ruin
+					//	|| _currentLocation->HasKeyword(keywordLocSetDwarvenRuin) // dwarwen ruin
+					//	|| _currentLocation->HasKeyword(keywordLocTypeDungeon) // dungeon
+					//	|| _currentLocation->HasKeyword(keywordLocTypeDragonPriestLair) // dragon priest lair
+					//	|| _currentLocation->HasKeyword(keywordLocTypeDragonLair) // dragon lair
+					//	|| _currentLocation->HasKeyword(keywordLocTypeDraugrCrypt) // draugr crypt
+					//	|| _currentLocation->HasKeyword(keywordLocTypeFalmerHive) // falmer hive
+					//	|| _currentLocation->HasKeyword(keywordLocTypeMine) // mine
+					//	|| _currentLocation->HasKeyword(keywordLocTypeTemple) // temple
 					//	) {
 					//	if (resultingLevel < iInsideDungeonBase) {
 					//		resultingLevel = iInsideDungeonBase;
 					//	}
 					//}
-					if (_currentLocation->keyword.HasKeyword(keywordLocSetCave)) { // cave
+					if (_currentLocation->HasKeyword(keywordLocSetCave)) { // cave
 						if (resultingLevel < iInsideCaveBase) {
 							resultingLevel = iInsideCaveBase;
 						}
 					}
-					if (_currentLocation->keyword.HasKeyword(keywordLocSetCaveIce)) { // ice cave
+					if (_currentLocation->HasKeyword(keywordLocSetCaveIce)) { // ice cave
 						if (resultingLevel < iInsideIceCaveBase) {
 							resultingLevel = iInsideIceCaveBase;
 						}
 					}
 
-					if (_currentLocation->keyword.HasKeyword(keywordLocSetOutdoor)) { // outside actually; shall other mods be applied as well?
+					if (_currentLocation->HasKeyword(keywordLocSetOutdoor)) { // outside actually; shall other mods be applied as well?
 						if (resultingLevel < iOutsideBase) {
 							resultingLevel = iOutsideBase;
 						}
@@ -639,34 +635,20 @@ namespace ImmersiveWinds {
 
 	long CheckShoutEffects()
 	{
-		if (*g_thePlayer)
-		{
-			MagicTarget::GetEffectCount counter;
-			(*g_thePlayer)->magicTarget.ForEachActiveEffect(counter);
-			for (UInt32 i = 0; i < counter.GetCount(); i++)
-			{
-				MagicTarget::GetNthEffect nthEffect(i);
-				(*g_thePlayer)->magicTarget.ForEachActiveEffect(nthEffect);
-				ActiveEffect* ae = nthEffect.GetResult();
-				if (ae)
-				{
-					if (ae->effect)
-					{
-						if (ae->effect->mgef)
-						{
-							if (ae->effect->mgef->formID == ImmersiveWindsCallEffect1FormId)
-							{								
-								return 1;
-							}
-							else if(ae->effect->mgef->formID == ImmersiveWindsCallEffect2FormId)
-							{
-								return 2;
-							}
-						}
-					}
-				}
+		auto player = RE::PlayerCharacter::GetSingleton();
+		auto effects = player ? player->AsMagicTarget()->GetActiveEffectList() : nullptr;
+		if (!effects)
+			return 0;
 
-			}
+		for (const auto ae : *effects)
+		{
+			const auto mgef = ae ? ae->GetBaseObject() : nullptr;
+			if (!mgef)
+				continue;
+			if (mgef->GetFormID() == ImmersiveWindsCallEffect1FormId)
+				return 1;
+			if (mgef->GetFormID() == ImmersiveWindsCallEffect2FormId)
+				return 2;
 		}
 		return 0;
 	}
@@ -694,155 +676,107 @@ namespace ImmersiveWinds {
 		t2.detach();
 	}
 
-	bool PlayerKnows(TESForm* form)
-	{
-		return PlayerKnowsNative((*g_skyrimVM)->GetClassRegistry(), 0, form);
-	}
-
-	UInt32 GetFullFormID(const ModInfo * modInfo, UInt32 formLower)
-	{
-		return (modInfo->modIndex << 24) | formLower;
-	}
-
-	// get mod index from a normal form ID 32 bit unsigned
-	static inline UInt32 GetModIndex(UInt32 formId)
-	{
-		return formId >> 24;
-	}
-
-	// get base formID (without mod index)
-	static inline UInt32 GetBaseFormID(UInt32 formId)
-	{
-		return formId & 0x00FFFFFF;
-	}
-
-	// check if mod index is valid (mod index is the upper 8 bits of form ID)
-	static inline bool IsValidModIndex(UInt32 modIndex)
-	{
-		return modIndex > 0 && modIndex != 0xFF;
-	}
-
 	bool FillFormIds()
 	{
-		DataHandler * dataHandler = DataHandler::GetSingleton();
+		keywordLocSetCave = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocSetCave);
+		keywordLocSetCaveIce = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocSetCaveIce);
+		keywordLocSetDwarvenRuin = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocSetDwarvenRuin);
+		keywordLocSetNordicRuin = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocSetNordicRuin);
+		keywordLocSetOutdoor = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocSetOutdoor);
+		keywordLocTypeDungeon = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeDungeon);
+		keywordLocTypeCity = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeCity);
+		keywordLocTypeDragonPriestLair = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeDragonPriestLair);
+		keywordLocTypeDragonLair = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeDragonLair);
+		keywordLocTypeDraugrCrypt = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeDraugrCrypt);
+		keywordLocTypeFalmerHive = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeFalmerHive);
+		keywordLocTypeMine = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeMine);
+		keywordLocTypeTemple = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeTemple);
+		keywordLocTypeDwelling = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeDwelling);
+		keywordLocTypeFarm = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeFarm);
+		keywordLocTypeGuild = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeGuild);
+		keywordLocTypeHold = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeHold);
+		keywordLocTypeHoldCapital = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeHoldCapital);
+		keywordLocTypeHoldMajor = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeHoldMajor);
+		keywordLocTypeHoldMinor = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeHoldMinor);
+		keywordLocTypeInn = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeInn);
+		keywordLocTypeJail = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeJail);
+		keywordLocTypeLumberMill = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeLumberMill);
+		keywordLocTypeShip = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeShip);
+		keywordLocTypeShipwreck = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeShipwreck);
+		keywordLocTypeStewardsDwelling = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeStewardsDwelling);
+		keywordLocTypeStore = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeStore);
+		keywordLocTypePlayerHouse = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypePlayerHouse);
+		keywordLocTypeHouse = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeHouse);
+		keywordLocTypeCastle = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeCastle);
 
-		TESForm* keywordForm = LookupFormByID(keywordIdLocSetCave); if (keywordForm) keywordLocSetCave = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocSetCaveIce); if (keywordForm) keywordLocSetCaveIce = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocSetDwarvenRuin); if (keywordForm) keywordLocSetDwarvenRuin = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocSetNordicRuin); if (keywordForm) keywordLocSetNordicRuin = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocSetOutdoor); if (keywordForm) keywordLocSetOutdoor = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeDungeon); if (keywordForm) keywordLocTypeDungeon = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeCity); if (keywordForm) keywordLocTypeCity = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeDragonPriestLair); if (keywordForm) keywordLocTypeDragonPriestLair = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeDragonLair); if (keywordForm) keywordLocTypeDragonLair = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeDraugrCrypt); if (keywordForm) keywordLocTypeDraugrCrypt = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeFalmerHive); if (keywordForm) keywordLocTypeFalmerHive = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeMine); if (keywordForm) keywordLocTypeMine = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeTemple); if (keywordForm) keywordLocTypeTemple = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeDwelling); if (keywordForm) keywordLocTypeDwelling = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeFarm); if (keywordForm) keywordLocTypeFarm = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeGuild); if (keywordForm) keywordLocTypeGuild = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeHold); if (keywordForm) keywordLocTypeHold = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeHoldCapital); if (keywordForm) keywordLocTypeHoldCapital = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeHoldMajor); if (keywordForm) keywordLocTypeHoldMajor = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeHoldMinor); if (keywordForm) keywordLocTypeHoldMinor = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeInn); if (keywordForm) keywordLocTypeInn = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeJail); if (keywordForm) keywordLocTypeJail = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeLumberMill); if (keywordForm) keywordLocTypeLumberMill = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeShip); if (keywordForm) keywordLocTypeShip = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeShipwreck); if (keywordForm) keywordLocTypeShipwreck = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeStewardsDwelling); if (keywordForm) keywordLocTypeStewardsDwelling = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeStore); if (keywordForm) keywordLocTypeStore = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypePlayerHouse); if (keywordForm) keywordLocTypePlayerHouse = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeHouse); if (keywordForm) keywordLocTypeHouse = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
-		keywordForm = LookupFormByID(keywordIdLocTypeCastle); if (keywordForm) keywordLocTypeCastle = DYNAMIC_CAST(keywordForm, TESForm, BGSKeyword);
+		auto dataHandler = RE::TESDataHandler::GetSingleton();
+		if (!dataHandler || !dataHandler->LookupModByName(pluginName))
+			return false;
 
-		const ModInfo * modInfo = dataHandler->LookupModByName(pluginName.c_str());
+		LOG("Plugin is loaded. Trying to find forms.");
 
-		if (modInfo)
-		{
-			LOG("Plugin is loaded. Trying to find forms.");
-
-			if (IsValidModIndex(modInfo->modIndex)) //If plugin is in the load order.
-			{
-				ImmersiveWindsCall1FormId = GetFullFormID(modInfo, GetBaseFormID(ImmersiveWindsCall1FormId));
-				ImmersiveWindsCall2FormId = GetFullFormID(modInfo, GetBaseFormID(ImmersiveWindsCall2FormId));
-				ImmersiveWindsCallEffect1FormId = GetFullFormID(modInfo, GetBaseFormID(ImmersiveWindsCallEffect1FormId));
-				ImmersiveWindsCallEffect2FormId = GetFullFormID(modInfo, GetBaseFormID(ImmersiveWindsCallEffect2FormId));
-				ImmersiveWindsCallShoutFormId = GetFullFormID(modInfo, GetBaseFormID(ImmersiveWindsCallShoutFormId));
-
-				if(ImmersiveWindsCallShoutFormId > 0)
-				{
-					TESForm* form = LookupFormByID(ImmersiveWindsCallShoutFormId);
-					if(form)
-					{
-						ImmersiveWindsCallShout = DYNAMIC_CAST(form, TESForm, TESShout);
-					}
-				}
-				
-				WordRazenFormId = GetFullFormID(modInfo, GetBaseFormID(WordRazenFormId));
-				if (WordRazenFormId > 0)
-				{
-					TESForm* form = LookupFormByID(WordRazenFormId);
-					if (form)
-					{
-						WordRazen = DYNAMIC_CAST(form, TESForm, TESWordOfPower);
-					}
-				}
-				
-				WordGanFormId = GetFullFormID(modInfo, GetBaseFormID(WordGanFormId));
-				if (WordGanFormId > 0)
-				{
-					TESForm* form = LookupFormByID(WordGanFormId);
-					if (form)
-					{
-						WordGan = DYNAMIC_CAST(form, TESForm, TESWordOfPower);
-					}
-				}			
-
-				return true;
-			}
-		}
-		return false;
+		// LookupFormID resolves the load order index (regular and light plugins)
+		ImmersiveWindsCall1FormId = dataHandler->LookupFormID(ImmersiveWindsCall1FormId, pluginName);
+		ImmersiveWindsCall2FormId = dataHandler->LookupFormID(ImmersiveWindsCall2FormId, pluginName);
+		ImmersiveWindsCallEffect1FormId = dataHandler->LookupFormID(ImmersiveWindsCallEffect1FormId, pluginName);
+		ImmersiveWindsCallEffect2FormId = dataHandler->LookupFormID(ImmersiveWindsCallEffect2FormId, pluginName);
+		ImmersiveWindsCallShout = dataHandler->LookupForm<TESShout>(ImmersiveWindsCallShoutFormId, pluginName);
+		WordRazen = dataHandler->LookupForm<TESWordOfPower>(WordRazenFormId, pluginName);
+		WordGan = dataHandler->LookupForm<TESWordOfPower>(WordGanFormId, pluginName);
+		return true;
 	}
 
 	int GetClassification(TESWeather * weather)
 	{
-		const auto flags = *((byte *)weather + 0x66F);
+		using Flag = TESWeather::WeatherDataFlag;
+		const auto& flags = weather->data.flags;
 
-		if (flags & 1)
+		if (flags.any(Flag::kPleasant))
 			return 0;
-		if (flags & 2)
+		if (flags.any(Flag::kCloudy))
 			return 1; //Cloudy
-		if (flags & 4)
+		if (flags.any(Flag::kRainy))
 			return 2; //Rainy
-		if (flags & 8)
+		if (flags.any(Flag::kSnow))
 			return 3; //Snowy
 
 		return -1;
 	}
 
-	void UnlockWordOfPower(TESWordOfPower * wop)
+	// Calls a vanilla Papyrus global (Game.TeachWord / Game.UnlockWord), same behaviour on SE, AE and VR
+	void CallGameFunction(const char * function, TESWordOfPower * wop)
 	{
-		UnlockWordNative((*g_skyrimVM)->GetClassRegistry(), 0, NULL, wop);
+		auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+		if (!vm)
+			return;
+		RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
+		vm->DispatchStaticCall("Game", function, RE::MakeFunctionArguments(std::move(wop)), callback);
 	}
 
-	void TeachWordOfPower(TESWordOfPower * wop)
+	void TeachShout()
 	{
-		TeachWordNative((*g_skyrimVM)->GetClassRegistry(), 0, NULL, wop);
+		// engine state is changed from the game's main thread, not from the weather thread
+		SKSE::GetTaskInterface()->AddTask([]() {
+			auto player = RE::PlayerCharacter::GetSingleton();
+			if (!player || WordRazen->GetKnown())
+				return;
+			player->AddShout(ImmersiveWindsCallShout);
+			CallGameFunction("TeachWord", WordRazen);
+			CallGameFunction("TeachWord", WordGan);
+			CallGameFunction("UnlockWord", WordRazen);
+			CallGameFunction("UnlockWord", WordGan);
+			LOG("Words learned and unlocked.");
+		});
 	}
 
 	void WeatherCheck()
 	{
-		TESObjectCELL* cell = nullptr;
-				
-		int classification = 0;
-
 		bool isInterior = false;
 
 		while (true)
 		{
-			if (!(*g_thePlayer) || !(*g_thePlayer)->loadedState)
+			auto player = RE::PlayerCharacter::GetSingleton();
+			if (!player || !player->Is3DLoaded())
 			{
 				//LOG_INFO("player null. Waiting for 5seconds");
 				Sleep(5000);
@@ -856,7 +790,7 @@ namespace ImmersiveWinds {
 				continue;
 			}
 
-			cell = (*g_thePlayer)->parentCell;
+			const auto cell = player->GetParentCell();
 
 			if (!cell)
 			{
@@ -868,17 +802,12 @@ namespace ImmersiveWinds {
 			{
 				if (!teach.load())
 				{
-					if (!PlayerKnows(LookupFormByID(WordRazen->formID)))
+					if (!WordRazen->GetKnown())
 					{
 						LOG("Player doesn't know the word.");
 						if (ImmersiveWindsCallShout)
 						{
-							ActorAddShoutNative((*g_thePlayer), ImmersiveWindsCallShout);
-							TeachWordOfPower(WordRazen);
-							TeachWordOfPower(WordGan);
-							UnlockWordOfPower(WordRazen);
-							UnlockWordOfPower(WordGan);
-							LOG("Words learned and unlocked.");
+							TeachShout();
 						}
 					}
 					else
@@ -901,7 +830,8 @@ namespace ImmersiveWinds {
 				}
 			}
 
-			if (!(cell->unk120) || (std::find(notExteriorWorlds.begin(), notExteriorWorlds.end(), cell->unk120->formID) != notExteriorWorlds.end())) //Interior Cell
+			const auto worldSpace = cell->GetRuntimeData().worldSpace;
+			if (!worldSpace || (std::find(notExteriorWorlds.begin(), notExteriorWorlds.end(), worldSpace->GetFormID()) != notExteriorWorlds.end())) //Interior Cell
 			{
 				isInterior = true;
 				interiorCell.store(true);
@@ -912,10 +842,10 @@ namespace ImmersiveWinds {
 				interiorCell.store(false);
 			}
 			
-			const auto skyPtr = *g_SkyPtr;
+			const auto skyPtr = RE::Sky::GetSingleton();
 			if (skyPtr != nullptr && skyPtr->currentWeather != nullptr)
 			{				
-				UpdateNativeWindState(isInterior, (*g_thePlayer)->pos.z, GetClassification(skyPtr->currentWeather), (*g_thePlayer)->currentLocation, skyPtr->timeOfDay, GetSunGlare(skyPtr->currentWeather), cell->formID, skyPtr->currentWeather->formID, GetWindSpeed(skyPtr->currentWeather));
+				UpdateNativeWindState(isInterior, player->GetPosition().z, GetClassification(skyPtr->currentWeather), player->GetCurrentLocation(), skyPtr->currentGameHour, GetSunGlare(skyPtr->currentWeather), cell->GetFormID(), skyPtr->currentWeather->GetFormID(), GetWindSpeed(skyPtr->currentWeather));
 
 				Sleep(3000);
 			}
@@ -935,11 +865,10 @@ namespace ImmersiveWinds {
 	//This function is used to initialize the mod.
 	void StartMod()
 	{
-		SafeWriteJump(addressStart.GetUIntPtr(), addressEnd.GetUIntPtr());
-
-		MenuManager * menuManager = MenuManager::GetSingleton();
-		if (menuManager)
-			menuManager->MenuOpenCloseEventDispatcher()->AddEventSink(&ImmersiveWinds::menuEvent);
+		// ponytail: the VR build patched an unknown game function here (SafeWriteJump at VR 0x127B460+0x38D);
+		// dropped in the port because its purpose and SE/AE address are unknown. Re-add via Address Library ID if needed.
+		if (auto ui = RE::UI::GetSingleton())
+			ui->AddEventSink<RE::MenuOpenCloseEvent>(&ImmersiveWinds::menuEvent);
 
 		teach.store(false);
 		FillFormIds();

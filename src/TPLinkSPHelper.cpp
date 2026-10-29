@@ -7,6 +7,8 @@
 #include <shlobj.h>
 #include <intrin.h>
 
+namespace ImmersiveWinds { std::string GetIniPath(); }
+
 TPLinkHelper::TPLinkHelper(bool enableLogging)
 {
 	m_loggingEnabled = enableLogging;
@@ -129,16 +131,7 @@ bool TPLinkHelper::LoadIPConfigFromFile(int &useUDP, std::string &defaultIp)
 	}
 	else
 	{
-		CHAR my_documents[MAX_PATH];
-		HRESULT result = SHGetFolderPath(NULL, CSIDL_PERSONAL, NULL, SHGFP_TYPE_CURRENT, my_documents);
-		//_MESSAGE(my_documents);
-
-		std::string sExecPath(my_documents);
-		sExecPath.append("\\My Games\\Skyrim VR\\SKSE\\");
-		//_MESSAGE(sExecPath.c_str());
-		sExecPath.append("immersiveWinds.ini");
-		//std::cout << sExecPath << "\n";
-		//_MESSAGE(sExecPath.c_str());
+		const std::string sExecPath = ImmersiveWinds::GetIniPath();
 
 		if (INVALID_FILE_ATTRIBUTES == GetFileAttributesA(sExecPath.c_str()) && GetLastError() == ERROR_FILE_NOT_FOUND)
 		{
