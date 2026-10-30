@@ -9,52 +9,27 @@
 #include <intrin.h>
 #include <vector>
 #include <iostream>
-#include <fstream> 
+#include <fstream>
 #include <stdio.h>
-#include <shlobj.h>
-#include <intrin.h>
 #include <string>
 #include "SPScanner.h"
 #include "TPLinkSPHelper.h"
-#include "skse64/PapyrusNativeFunctions.h"
-#include "skse64_common/SafeWrite.h"
-#include "skse64/GameForms.h"
-#include "skse64/GameData.h"
-#include "skse64/GameRTTI.h"
-#include "skse64/GameMenus.h"
-#include "skse64/PapyrusEvents.h"
 #include "MenuChecker.h"
-#include "Sky.h"
 #include <atomic>
-
-class TESWeather;
-struct SKSETaskInterface;
 
 namespace ImmersiveWinds
 {
-	const std::string MOD_VERSION = "1.2.0";
+	using UInt32 = std::uint32_t;
+	using RE::BGSKeyword;
+	using RE::BGSLocation;
+	using RE::TESShout;
+	using RE::TESWeather;
+	using RE::TESWordOfPower;
 
-	typedef void(*_ActorAddShoutNative)(Actor *actor, TESShout* shout);
-	static RelocAddr<_ActorAddShoutNative> ActorAddShoutNative(0x00638750);
+	const std::string MOD_VERSION = "1.3.0";
 
-	typedef void(*_TeachWordNative)(VMClassRegistry* registry, UInt32 stackId, void*, TESWordOfPower* word);
-	static RelocAddr<_TeachWordNative> TeachWordNative(0x009AD920);
-
-	typedef void(*_UnlockWordNative)(VMClassRegistry* registry, UInt32 stackId, void*, TESWordOfPower* word);
-	static RelocAddr<_UnlockWordNative> UnlockWordNative(0x009AD9B0);
-
-	typedef bool(*_PlayerKnowsNative)(VMClassRegistry* registry, UInt32 stackId, TESForm* form);
-	static RelocAddr<_PlayerKnowsNative> PlayerKnowsNative(0x09C2F50);
-
-
-	static Sky ** g_SkyPtr = RelocPtr<Sky *>(0x02FC62C8);
 	static std::vector<UInt32> notExteriorWorlds = { 0x69857, 0x1EE62, 0x20DCB, 0x1FAE2, 0x34240, 0x50015, 0x2C965, 0x29AB7, 0x4F838, 0x3A9D6, 0x243DE, 0xC97EB, 0xC350D, 0x1CDD3, 0x1CDD9, 0x21EDB, 0x1E49D, 0x2B101, 0x2A9D8, 0x20BFE };
 
-	static UInt32 funcAddress = 0x0127B460;
-
-	static RelocAddr<uintptr_t *> addressStart = funcAddress + 0x38D;
-	static RelocAddr<uintptr_t *> addressEnd = funcAddress + 0x3BF;
-	
 	void Log(const int msgLogLevel, const char * fmt, ...);
 
 	enum eLogLevels
@@ -318,6 +293,6 @@ namespace ImmersiveWinds
 
 	void WeatherCheck();
 	
-	void StartMod(SKSETaskInterface * taskInterface);
+	void StartMod();
 
 }
