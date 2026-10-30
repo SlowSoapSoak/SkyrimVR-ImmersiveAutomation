@@ -110,8 +110,8 @@ Set `sSwitchType=http` and the two urls. Any answer with status 2xx counts as su
 
 A second, independent SKSE plugin, `ImmersiveSunPluginScript.dll`, switches another smart plug, e.g. with an infrared heat lamp, while the player is near a heat source:
 
-- **Fire hits**: hit by fire (fire spells, dragon breath, fire enchanted weapons) keeps it on for `fFireHitSeconds`; it stays on while fire damage effects are active on the player.
-- **Own fire spells**: while the player charges or casts a fire spell.
+- **Fire hits**: hit by fire (fire spells, dragon breath, fire enchanted weapons) or any fire damage effect applied to the player (traps, hazards, cloak spells) switches on right away, from the game event, and keeps it on for at least `fFireHitSeconds`; it stays on while fire damage effects are active on the player.
+- **Own fire spells**: while the player charges a fire spell; casting one switches on right away and keeps it on for at least `fFireHitSeconds`.
 - **Fire nearby**: a reference within `fFireRadius` whose model path contains a word of `sFireModels` and none of `sFireModelsExclude` (campfires, braziers, hearths, forges, lava, ...). This is a heuristic: with `bLoggingEnabled=1` the log lists every model it counts as fire, which helps to tune the two lists.
 - **Direct sunlight**: outside (or in an interior marked as outdoor), between `fDayStartHour` and `fDayEndHour`, with a sun glare of the weather above `fMinSunGlare` and the light level at the player above `fMinLightLevel`.
 
@@ -131,6 +131,8 @@ Installation: copy the DLL to `Data/SKSE/Plugins`. TP-Link: name the plug **`Imm
 | | `sFireModelsExclude` | `firewood,fireplace,nofire,unlit` |
 | | `bSunlight`, `fMinSunGlare`, `fMinLightLevel` | `1`, `0.4` (0-1), `138` (`0` disables the light check) |
 | | `fDayStartHour`, `fDayEndHour` | `7.2`, `17.76` |
+| | `fLightLevelHysteresis` | `4`: in the sun, the light level has to drop this much below `fMinLightLevel` to count as shadow, so the plug does not flicker at the edge of a shadow |
+| | `fCheckIntervalSeconds` | `0.1`: time between two checks (the search for fire nearby runs once per second) |
 
 ## Building
 
