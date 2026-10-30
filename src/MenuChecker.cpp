@@ -61,6 +61,10 @@ namespace ImmersiveWinds
 			else
 				openStoppingMenus.erase(menuName);
 			menuStopsGameNoDialogue = !openStoppingMenus.empty();
+
+			// react right away instead of with the next timer check: stop the fan when a menu opens and
+			// update the wind level when the game continues (e.g. a new cell after a loading screen)
+			RequestGameStateCheck();
 		}
 
 		return RE::BSEventNotifyControl::kContinue;
