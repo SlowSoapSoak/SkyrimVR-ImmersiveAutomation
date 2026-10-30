@@ -106,6 +106,32 @@ Set `sSwitchType=http` and the two urls. Any answer with status 2xx counts as su
 | Tasmota | `http://<ip>/cm?cmnd=Power%20On` | `http://<ip>/cm?cmnd=Power%20Off` |
 | Home Assistant webhook (`sHttpMethod=POST`) | `http://<ha>:8123/api/webhook/<on id>` | `http://<ha>:8123/api/webhook/<off id>` |
 
+## Immersive Sun (heat lamp)
+
+A second, independent SKSE plugin, `ImmersiveSunPluginScript.dll`, switches another smart plug, e.g. with an infrared heat lamp, while the player is near a heat source:
+
+- **Fire hits**: hit by fire (fire spells, dragon breath, fire enchanted weapons) keeps it on for `fFireHitSeconds`; it stays on while fire damage effects are active on the player.
+- **Own fire spells**: while the player charges or casts a fire spell.
+- **Fire nearby**: a reference within `fFireRadius` whose model path contains a word of `sFireModels` and none of `sFireModelsExclude` (campfires, braziers, hearths, forges, lava, ...). This is a heuristic: with `bLoggingEnabled=1` the log lists every model it counts as fire, which helps to tune the two lists.
+- **Direct sunlight**: outside (or in an interior marked as outdoor), between `fDayStartHour` and `fDayEndHour`, with a sun glare of the weather above `fMinSunGlare` and the light level at the player above `fMinLightLevel`.
+
+Like the fan it is off while the game is in the background (SE/AE), when the game stands still, during menus that pause the game (`bNoHeatInMenu`) and when the game exits.
+
+Installation: copy the DLL to `Data/SKSE/Plugins`. TP-Link: name the plug **`ImmersiveSunPlug1`**. No ESP is needed. Settings are written to `immersiveSun.ini` next to `immersiveWinds.ini`, the log is `ImmersiveSunPluginScript.log`.
+
+| Section | Key | Default |
+|---|---|---|
+| `[GeneralModConfig]` | `sSwitchType`, `bUseUdp`, `bLoggingEnabled` | `tplink`, `1`, `0` (as for the fan) |
+| | `bNoHeatInMenu` | `1` |
+| `[HttpSwitch]` | `sHttpMethod`, `sOnUrl`, `sOffUrl` | as for the fan |
+| `[HeatSources]` | `bFireHits`, `fFireHitSeconds` | `1`, `3` |
+| | `bOwnFireSpells` | `1` |
+| | `bNearFire`, `fFireRadius` | `1`, `350` (game units, about 5 m) |
+| | `sFireModels` | `fire,flame,brazier,forge,smelter,lava,embers,hearth` |
+| | `sFireModelsExclude` | `firewood,fireplace,nofire,unlit` |
+| | `bSunlight`, `fMinSunGlare`, `fMinLightLevel` | `1`, `0.4` (0-1), `138` (`0` disables the light check) |
+| | `fDayStartHour`, `fDayEndHour` | `7.2`, `17.76` |
+
 ## Building
 
 Needs Visual Studio 2022 (C++ workload), vcpkg (`VCPKG_ROOT`) and the git submodules.

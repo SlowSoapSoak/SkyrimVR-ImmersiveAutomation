@@ -36,7 +36,9 @@ public:
 	bool OpenConnection();
 	void CloseConnection();
 
-	bool LoadIPConfigFromFile(int &useUDP, std::string &defaultIp);
+	// Uses defaultIp and useUDP if both are set, otherwise reads them from iniPath ([Internal] ipKey and
+	// [GeneralModConfig] bUseUdp) and returns them in defaultIp and useUDP. Returns false without an ip.
+	bool LoadIPConfigFromFile(const std::string &iniPath, const char *ipKey, int &useUDP, std::string &defaultIp);
 
 
 	bool SwitchRelayState(long on);
