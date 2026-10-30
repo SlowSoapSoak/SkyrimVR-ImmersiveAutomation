@@ -1,0 +1,47 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    # CommonLibSSE-NG is compiled from source, which takes a while
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # MSVC compiler environment for Ninja
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - uses: lukka/get-cmake@latest
+
+      # vcpkg at the manifest's builtin-baseline, sets VCPKG_ROOT for CMakePresets.json
+      - uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ee12231b20c95013c6638d845d04c91559a1d1ff
+
+      # CommonLibSSE-NG links a prebuilt CommonLibSSE.lib whenever GITHUB_ACTIONS is set, and that library
+      # was built against a different fmt than our vcpkg baseline (unresolved fmt::v12::detail::allocate).
+      # Without the variable it is built from source against our dependencies, like in a local build.
+      - name: Configure
+        shell: pwsh
+        run: |
+          Remove-Item Env:GITHUB_ACTIONS
+          cmake --preset release
+
+      - name: Build
+        run: cmake --build --preset release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ImmersiveWindsPluginScript
+          path: |
+            build/ImmersiveWindsPluginScript.dll
+            build/ImmersiveWindsPluginScript.pdb
+            Winds/ImmersiveWindsVR.esp
