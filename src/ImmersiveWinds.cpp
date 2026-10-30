@@ -28,10 +28,11 @@ namespace ImmersiveWinds {
 
 		const int SCAN_MAX_ATTEMPTS = 5;
 		const int SCAN_RETRY_DELAY_MS = 10000;
-		const int WEATHER_CHECK_INTERVAL_MS = 3000;
+		const float WEATHER_CHECK_INTERVAL_SECONDS = 3.0f;
+		const int FOCUS_CHECK_INTERVAL_MS = 250;
 		// the relay state is sent again after this time, in case a (udp) message got lost or the plug restarted
 		const float RELAY_RESEND_INTERVAL_SECONDS = 15.0f;
-		// a queued weather check that did not run after this time means the game stands still (minimized, frozen, long loading screen)
+		// a queued weather check that did not run after this time means the game stands still (frozen, long loading screen)
 		const float GAME_STALLED_SECONDS = 10.0f;
 		// an on or off time this long keeps the plug in one state
 		const float ALWAYS = 999999.0f;
@@ -833,24 +834,50 @@ namespace ImmersiveWinds {
 		return SecondsSince(std::chrono::steady_clock::time_point(std::chrono::steady_clock::duration(_checkQueuedAt.load())));
 	}
 
-	// Background timer: queues UpdateFromGameState on the main thread every few seconds.
+	// Skyrim VR keeps running without window focus, so it always counts as in the foreground there.
+	bool IsGameInForeground()
+	{
+		if (REL::Module::IsVR())
+			return true;
+
+		DWORD processId = 0;
+		GetWindowThreadProcessId(GetForegroundWindow(), &processId);
+		return processId == GetCurrentProcessId();
+	}
+
+	// Background timer: watches the window focus and queues UpdateFromGameState on the main thread every few seconds.
 	void WeatherCheck()
 	{
+		std::chrono::steady_clock::time_point lastCheck;
+
 		while (_keepRunning)
 		{
-			if (menuStopsGameNoDialogue && _noWindInMenu)
+			if (!IsGameInForeground())
+			{
+				if (_currentSwitchState != 0)
+				{
+					LOG("Game is in the background, stopping the fan.");
+					_currentSwitchState = 0;
+				}
+				lastCheck = {}; // restores the level right when the game is back
+			}
+			else if (menuStopsGameNoDialogue && _noWindInMenu)
 			{
 				// also handled here, so the fan stops even if the game does not process tasks while the menu is open
 				_currentSwitchState = 0; //No fan in menu.
 			}
-			// a check that is still queued after GAME_STALLED_SECONDS means the game stands still
-			else if (!RequestGameStateCheck() && SecondsSinceCheckQueued() >= GAME_STALLED_SECONDS && _currentSwitchState != 0)
+			else if (SecondsSince(lastCheck) >= WEATHER_CHECK_INTERVAL_SECONDS)
 			{
-				// no fan while nobody plays; the next check after the game continues restores the level
-				LOG("Game stands still, stopping the fan.");
-				_currentSwitchState = 0;
+				lastCheck = std::chrono::steady_clock::now();
+				// a check that is still queued after GAME_STALLED_SECONDS means the game stands still
+				if (!RequestGameStateCheck() && SecondsSinceCheckQueued() >= GAME_STALLED_SECONDS && _currentSwitchState != 0)
+				{
+					// no fan while nobody plays; the next check after the game continues restores the level
+					LOG("Game stands still, stopping the fan.");
+					_currentSwitchState = 0;
+				}
 			}
-			Sleep(WEATHER_CHECK_INTERVAL_MS);
+			Sleep(FOCUS_CHECK_INTERVAL_MS);
 		}
 	}
 
