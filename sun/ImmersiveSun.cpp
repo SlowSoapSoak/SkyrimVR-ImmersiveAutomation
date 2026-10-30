@@ -493,8 +493,8 @@ namespace ImmersiveSun {
 		else if (_settings.noHeatInMenu && RE::UI::GetSingleton() && RE::UI::GetSingleton()->GameIsPaused()) {
 			reason = "";
 		}
-		else if (_settings.fireHits && Clock::now() < FromTicks(_fireHitUntil.load())) {
-			reason = "hit by fire";
+		else if (Clock::now() < FromTicks(_fireHitUntil.load())) {
+			reason = "fire event"; // hit, fire effect or own fire spell, see the events below
 		}
 		else if (_settings.fireHits && IsBurning(player)) {
 			reason = "burning";
@@ -561,23 +561,66 @@ namespace ImmersiveSun {
 	}
 
 	// ---- events ----
+	// The events switch the plug on directly, without waiting for the next check on the main thread.
+	// The heat then lasts at least fFireHitSeconds; the checks keep it on while the fire goes on.
 
+	bool IsPlayer(const RE::NiPointer<RE::TESObjectREFR> & ref)
+	{
+		return ref && ref.get() == RE::PlayerCharacter::GetSingleton();
+	}
+
+	void HeatFromFireEvent(const char * what)
+	{
+		const auto until = Clock::now() + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<float>(_settings.fireHitSeconds));
+		_fireHitUntil = until.time_since_epoch().count();
+		if (!_heatOn) {
+			Log("Heat: %s (event)", what);
+		}
+		SetHeat(true);
+	}
+
+	// hit by a fire spell, shout or fire enchanted weapon
 	class HitEventHandler : public RE::BSTEventSink<RE::TESHitEvent>
 	{
 	public:
 		RE::BSEventNotifyControl ProcessEvent(const RE::TESHitEvent * event, RE::BSTEventSource<RE::TESHitEvent> *) override
 		{
-			if (event && event->target && event->target.get() == RE::PlayerCharacter::GetSingleton() && IsFireSource(event->source)) {
-				const auto until = Clock::now() + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<float>(_settings.fireHitSeconds));
-				_fireHitUntil = until.time_since_epoch().count();
-				// react right away instead of with the next timer check
-				RequestGameStateCheck();
+			if (event && _settings.fireHits && IsPlayer(event->target) && IsFireSource(event->source)) {
+				HeatFromFireEvent("hit by fire");
+			}
+			return RE::BSEventNotifyControl::kContinue;
+		}
+	};
+
+	// any fire damage effect applied to the player, also without a hit: hazards, cloaks, traps, enchantments
+	class MagicEffectApplyEventHandler : public RE::BSTEventSink<RE::TESMagicEffectApplyEvent>
+	{
+	public:
+		RE::BSEventNotifyControl ProcessEvent(const RE::TESMagicEffectApplyEvent * event, RE::BSTEventSource<RE::TESMagicEffectApplyEvent> *) override
+		{
+			if (event && _settings.fireHits && IsPlayer(event->target) && IsFireEffect(RE::TESForm::LookupByID<RE::EffectSetting>(event->magicEffect))) {
+				HeatFromFireEvent("fire effect");
+			}
+			return RE::BSEventNotifyControl::kContinue;
+		}
+	};
+
+	// the player casts a fire spell (charging is covered by the regular check)
+	class SpellCastEventHandler : public RE::BSTEventSink<RE::TESSpellCastEvent>
+	{
+	public:
+		RE::BSEventNotifyControl ProcessEvent(const RE::TESSpellCastEvent * event, RE::BSTEventSource<RE::TESSpellCastEvent> *) override
+		{
+			if (event && _settings.ownFireSpells && IsPlayer(event->object) && IsFireMagic(RE::TESForm::LookupByID<RE::MagicItem>(event->spell))) {
+				HeatFromFireEvent("casting fire");
 			}
 			return RE::BSEventNotifyControl::kContinue;
 		}
 	};
 
 	HitEventHandler hitEventHandler;
+	MagicEffectApplyEventHandler magicEffectApplyEventHandler;
+	SpellCastEventHandler spellCastEventHandler;
 
 	// ---- start / exit ----
 
@@ -589,6 +632,8 @@ namespace ImmersiveSun {
 		keywordLocSetOutdoor = RE::TESForm::LookupByID<RE::BGSKeyword>(KEYWORD_ID_LOC_SET_OUTDOOR);
 		if (auto events = RE::ScriptEventSourceHolder::GetSingleton()) {
 			events->AddEventSink<RE::TESHitEvent>(&hitEventHandler);
+			events->AddEventSink<RE::TESMagicEffectApplyEvent>(&magicEffectApplyEventHandler);
+			events->AddEventSink<RE::TESSpellCastEvent>(&spellCastEventHandler);
 		}
 
 		std::thread(ScanThread).detach();
