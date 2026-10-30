@@ -161,7 +161,7 @@ namespace ImmersiveWinds
 	extern std::atomic<long> _currentSwitchState;
 	static std::map<int, LevelValues> _levelValues;
 	static bool _s1Swap = true;
-	static clock_t _beginTime;
+	static std::chrono::steady_clock::time_point _beginTime;
 	static std::default_random_engine _generator;
 	static bool _logsEnabled = false;
 	static std::string workingIp;
@@ -290,6 +290,8 @@ namespace ImmersiveWinds
 	void TriggerShout(long level);
 
 	void InitBgThread();	
+
+	void WeatherCheck();
 	
 	void StartMod();
 
