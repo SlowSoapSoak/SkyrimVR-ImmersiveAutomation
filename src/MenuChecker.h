@@ -9,7 +9,7 @@ namespace ImmersiveWinds
 	extern std::atomic<bool> menuStopsGameNoDialogue;
 
 	// Queues a check of the game state on the main thread (ImmersiveWinds.cpp), unless one is already queued.
-	void RequestGameStateCheck();
+	bool RequestGameStateCheck();
 
 	class AllMenuEventHandler : public RE::BSTEventSink<RE::MenuOpenCloseEvent> {
 	public:
