@@ -144,3 +144,7 @@ git clone --recursive https://github.com/SlowSoapSoak/SkyrimVR-ImmersiveAutomati
 Or by hand: `cmake --preset release` and `cmake --build --preset release`; set `SKYRIM_DATA_DIR` to deploy into a game folder.
 
 Every pull request is built by GitHub Actions; the DLL is attached to the run as artifact.
+
+## History
+
+Up to version 1.2.0 both plugins were SKSEVR-only Visual Studio projects in `IW_V3/`, built against a copy of the SKSE sources; *Immersive Sun* got its data from a Papyrus script. They now live in `src/` and `sun/` and build with CommonLibSSE-NG. The old tree is no longer part of the repository; it is still in the git history, e.g. at commit `9c04d2f`.
