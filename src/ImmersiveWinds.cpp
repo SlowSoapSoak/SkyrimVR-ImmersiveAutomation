@@ -41,7 +41,8 @@ namespace ImmersiveWinds {
 		const float ALWAYS = 999999.0f;
 		const int MAX_LEVEL = 6;
 
-		const char * PLUG_NAME = "ImmersiveWindsPlug";
+		// default name of the TP-Link plug in the Kasa app, [GeneralModConfig] sPlugName
+		const char * DEFAULT_PLUG_NAME = "ImmersiveWindsPlug";
 		const char * PLUGIN_NAME = "ImmersiveWindsVR.esp";
 
 		// ini sections (names kept for compatibility with existing ini files)
@@ -59,6 +60,7 @@ namespace ImmersiveWinds {
 
 		// sSwitchType: "tplink" (TP-Link Kasa plug, found by a network scan) or "http" (sOnUrl / sOffUrl)
 		bool _useHttpSwitch = false;
+		std::string _plugName = DEFAULT_PLUG_NAME;
 		std::string _httpMethod = "GET";
 		std::string _httpOnUrl;
 		std::string _httpOffUrl;
@@ -302,7 +304,7 @@ namespace ImmersiveWinds {
 	{
 		// a http switch is addressed by its urls, there is nothing to search
 		if (!_useHttpSwitch) {
-			const std::string ip = FindTpLinkPlug(GetIniPath(), "sTpLinkPlugIp", PLUG_NAME, _logsEnabled, _keepRunning);
+			const std::string ip = FindTpLinkPlug(GetIniPath(), "sTpLinkPlugIp", _plugName, _logsEnabled, _keepRunning);
 			if (!ip.empty()) {
 				SetWorkingIp(ip);
 			}
@@ -402,6 +404,7 @@ namespace ImmersiveWinds {
 		}
 		WriteIniIfMissing(INI_INTERNAL, "sTpLinkPlugIp", "", sExecPath);
 		WriteIniIfMissing(INI_GENERAL, "sSwitchType", "tplink", sExecPath);
+		WriteIniIfMissing(INI_GENERAL, "sPlugName", DEFAULT_PLUG_NAME, sExecPath);
 		WriteIniIfMissing(INI_HTTP, "sHttpMethod", "GET", sExecPath);
 		WriteIniIfMissing(INI_HTTP, "sOnUrl", "", sExecPath);
 		WriteIniIfMissing(INI_HTTP, "sOffUrl", "", sExecPath);
@@ -492,6 +495,10 @@ namespace ImmersiveWinds {
 		_intermittentModeEnabled = ReadGeneralSetting("bIntermittentModeEnabled", sExecPath) > 0;
 
 		_useHttpSwitch = _stricmp(Trim(ReadIniString(INI_GENERAL, "sSwitchType", "tplink", sExecPath)).c_str(), "http") == 0;
+		_plugName = Trim(ReadIniString(INI_GENERAL, "sPlugName", DEFAULT_PLUG_NAME, sExecPath));
+		if (_plugName.empty()) {
+			_plugName = DEFAULT_PLUG_NAME;
+		}
 		_httpMethod = Trim(ReadIniString(INI_HTTP, "sHttpMethod", "GET", sExecPath));
 		_httpOnUrl = Trim(ReadIniString(INI_HTTP, "sOnUrl", "", sExecPath));
 		_httpOffUrl = Trim(ReadIniString(INI_HTTP, "sOffUrl", "", sExecPath));
