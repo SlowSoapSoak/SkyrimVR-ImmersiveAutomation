@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <mutex>
 #include <sstream>
@@ -29,8 +30,11 @@ namespace ImmersiveSun {
 		const char * INI_HTTP = "HttpSwitch";
 		const char * INI_HEAT = "HeatSources";
 
-		const float HEAT_CHECK_INTERVAL_SECONDS = 1.0f;
-		const int FOCUS_CHECK_INTERVAL_MS = 250;
+		// how often the timer thread wakes up (focus check, heat check interval)
+		const int TIMER_INTERVAL_MS = 25;
+		// the search for fire nearby goes through all references in range, so it runs less often than the other checks
+		const float FIRE_SCAN_INTERVAL_SECONDS = 1.0f;
+		const float MIN_CHECK_INTERVAL_SECONDS = 0.05f;
 		// the plug state is sent again after this time, in case a (udp) message got lost or the plug restarted
 		const float RELAY_RESEND_INTERVAL_SECONDS = 15.0f;
 		// a queued check that did not run after this time means the game stands still (frozen, long loading screen)
@@ -55,6 +59,9 @@ namespace ImmersiveSun {
 			bool sunlight = true;
 			float minSunGlare = 0.4f;     // 0-1
 			float minLightLevel = 138.0f; // light level at the player (Actor.GetLightLevel), 0 disables the check
+			// sunlight stays on until the light level drops this much below minLightLevel, so the plug does not
+			// flicker at the edge of a shadow
+			float lightLevelHysteresis = 4.0f;
 			float dayStartHour = 7.2f;
 			float dayEndHour = 17.76f;
 
@@ -68,6 +75,9 @@ namespace ImmersiveSun {
 			bool fireHits = true;
 			float fireHitSeconds = 3.0f;
 			bool ownFireSpells = true;
+
+			// time between two checks of the heat sources
+			float checkIntervalSeconds = 0.1f;
 		};
 
 		const char * DEFAULT_FIRE_MODELS = "fire,flame,brazier,forge,smelter,lava,embers,hearth";
@@ -80,6 +90,9 @@ namespace ImmersiveSun {
 		std::atomic<bool> _keepRunning(true);
 		// whether the plug should be on, written by the heat check and the focus handling, read by the switch thread
 		std::atomic<bool> _heatOn(false);
+		// wakes the switch thread when _heatOn changes
+		std::mutex _switchMutex;
+		std::condition_variable _switchSignal;
 
 		// workingIp and useUDP are written by the scan thread and read by the switch thread
 		std::mutex _connectionConfigMutex;
@@ -97,6 +110,10 @@ namespace ImmersiveSun {
 		std::unordered_map<RE::FormID, bool> _fireModelCache;
 		// last reason that was logged, to log only changes
 		std::string _lastReason;
+		// main thread only: result of the last fire search and of the last sunlight check (for the hysteresis)
+		bool _nearFire = false;
+		Clock::time_point _lastFireScan;
+		bool _inSunlight = false;
 	}
 
 	// ---- helpers ----
@@ -208,6 +225,7 @@ namespace ImmersiveSun {
 		WriteIniIfMissing(INI_HEAT, "bSunlight", "1", path);
 		WriteIniIfMissing(INI_HEAT, "fMinSunGlare", std::to_string(defaults.minSunGlare), path);
 		WriteIniIfMissing(INI_HEAT, "fMinLightLevel", std::to_string(defaults.minLightLevel), path);
+		WriteIniIfMissing(INI_HEAT, "fLightLevelHysteresis", std::to_string(defaults.lightLevelHysteresis), path);
 		WriteIniIfMissing(INI_HEAT, "fDayStartHour", std::to_string(defaults.dayStartHour), path);
 		WriteIniIfMissing(INI_HEAT, "fDayEndHour", std::to_string(defaults.dayEndHour), path);
 		WriteIniIfMissing(INI_HEAT, "bNearFire", "1", path);
@@ -217,6 +235,7 @@ namespace ImmersiveSun {
 		WriteIniIfMissing(INI_HEAT, "bFireHits", "1", path);
 		WriteIniIfMissing(INI_HEAT, "fFireHitSeconds", std::to_string(defaults.fireHitSeconds), path);
 		WriteIniIfMissing(INI_HEAT, "bOwnFireSpells", "1", path);
+		WriteIniIfMissing(INI_HEAT, "fCheckIntervalSeconds", std::to_string(defaults.checkIntervalSeconds), path);
 	}
 
 	void LoadSettings()
@@ -235,6 +254,7 @@ namespace ImmersiveSun {
 		s.sunlight = ReadIniBool(INI_HEAT, "bSunlight", defaults.sunlight, path);
 		s.minSunGlare = ReadIniFloat(INI_HEAT, "fMinSunGlare", defaults.minSunGlare, path);
 		s.minLightLevel = ReadIniFloat(INI_HEAT, "fMinLightLevel", defaults.minLightLevel, path);
+		s.lightLevelHysteresis = std::max(0.0f, ReadIniFloat(INI_HEAT, "fLightLevelHysteresis", defaults.lightLevelHysteresis, path));
 		s.dayStartHour = ReadIniFloat(INI_HEAT, "fDayStartHour", defaults.dayStartHour, path);
 		s.dayEndHour = ReadIniFloat(INI_HEAT, "fDayEndHour", defaults.dayEndHour, path);
 		s.nearFire = ReadIniBool(INI_HEAT, "bNearFire", defaults.nearFire, path);
@@ -244,6 +264,7 @@ namespace ImmersiveSun {
 		s.fireHits = ReadIniBool(INI_HEAT, "bFireHits", defaults.fireHits, path);
 		s.fireHitSeconds = ReadIniFloat(INI_HEAT, "fFireHitSeconds", defaults.fireHitSeconds, path);
 		s.ownFireSpells = ReadIniBool(INI_HEAT, "bOwnFireSpells", defaults.ownFireSpells, path);
+		s.checkIntervalSeconds = std::max(MIN_CHECK_INTERVAL_SECONDS, ReadIniFloat(INI_HEAT, "fCheckIntervalSeconds", defaults.checkIntervalSeconds, path));
 
 		_MESSAGE("Heat sources: sunlight %d, fire nearby %d (radius %g), fire hits %d, own fire spells %d, switch %s",
 			s.sunlight, s.nearFire, s.fireRadius, s.fireHits, s.ownFireSpells, s.useHttpSwitch ? "http" : "tplink");
@@ -303,7 +324,18 @@ namespace ImmersiveSun {
 				lastSend = Clock::now();
 				firstSend = false;
 			}
-			Sleep(100);
+			// wake up right when the wanted state changes, at the latest for the resend
+			std::unique_lock<std::mutex> lock(_switchMutex);
+			_switchSignal.wait_for(lock, std::chrono::milliseconds(500), [&sentState] { return !_keepRunning || _heatOn != sentState; });
+		}
+	}
+
+	void SetHeat(bool on)
+	{
+		if (_heatOn.exchange(on) != on) {
+			// the lock makes sure the switch thread is either before its check or waiting, so the signal is not lost
+			{ std::lock_guard<std::mutex> lock(_switchMutex); }
+			_switchSignal.notify_one();
 		}
 	}
 
@@ -431,9 +463,21 @@ namespace ImmersiveSun {
 		auto high = player->GetHighProcess();
 		const float lightLevel = high ? high->lightLevel : 0.0f;
 
+		// once in the sun, it takes a slightly lower light level to count as shadow again
+		const float minLightLevel = _inSunlight ? _settings.minLightLevel - _settings.lightLevelHysteresis : _settings.minLightLevel;
+
 		return hour > _settings.dayStartHour && hour < _settings.dayEndHour
 			&& sunGlare > _settings.minSunGlare
-			&& (_settings.minLightLevel <= 0 || lightLevel > _settings.minLightLevel);
+			&& (_settings.minLightLevel <= 0 || lightLevel > minLightLevel);
+	}
+
+	bool IsNearFireCached(RE::PlayerCharacter * player)
+	{
+		if (SecondsSince(_lastFireScan) >= FIRE_SCAN_INTERVAL_SECONDS) {
+			_lastFireScan = Clock::now();
+			_nearFire = IsNearFire(player);
+		}
+		return _nearFire;
 	}
 
 	// Reads the heat sources and sets _heatOn. Calls into the engine, so it must run on the game's main thread.
@@ -441,6 +485,8 @@ namespace ImmersiveSun {
 	{
 		auto player = RE::PlayerCharacter::GetSingleton();
 		std::string reason;
+		// checked every time so the hysteresis always knows the last sunlight state
+		_inSunlight = _settings.sunlight && player && player->Is3DLoaded() && IsInSunlight(player);
 		if (!player || !player->Is3DLoaded()) {
 			reason = "";
 		}
@@ -456,14 +502,14 @@ namespace ImmersiveSun {
 		else if (_settings.ownFireSpells && IsCastingFire(player)) {
 			reason = "casting fire";
 		}
-		else if (_settings.nearFire && IsNearFire(player)) {
+		else if (_settings.nearFire && IsNearFireCached(player)) {
 			reason = "fire nearby";
 		}
-		else if (_settings.sunlight && IsInSunlight(player)) {
+		else if (_inSunlight) {
 			reason = "sunlight";
 		}
 
-		_heatOn = !reason.empty();
+		SetHeat(!reason.empty());
 		if (reason != _lastReason) {
 			Log("Heat: %s", reason.empty() ? "none" : reason.c_str());
 			_lastReason = reason;
@@ -501,16 +547,16 @@ namespace ImmersiveSun {
 		Clock::time_point lastCheck;
 		while (_keepRunning) {
 			if (!IsGameInForeground()) {
-				_heatOn = false;
+				SetHeat(false);
 				lastCheck = {}; // check right when the game is back
 			}
-			else if (SecondsSince(lastCheck) >= HEAT_CHECK_INTERVAL_SECONDS) {
+			else if (SecondsSince(lastCheck) >= _settings.checkIntervalSeconds) {
 				lastCheck = Clock::now();
 				if (!RequestGameStateCheck() && SecondsSince(FromTicks(_checkQueuedAt.load())) >= GAME_STALLED_SECONDS) {
-					_heatOn = false;
+					SetHeat(false);
 				}
 			}
-			Sleep(FOCUS_CHECK_INTERVAL_MS);
+			Sleep(TIMER_INTERVAL_MS);
 		}
 	}
 

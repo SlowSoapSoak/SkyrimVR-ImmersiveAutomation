@@ -131,6 +131,8 @@ Installation: copy the DLL to `Data/SKSE/Plugins`. TP-Link: name the plug **`Imm
 | | `sFireModelsExclude` | `firewood,fireplace,nofire,unlit` |
 | | `bSunlight`, `fMinSunGlare`, `fMinLightLevel` | `1`, `0.4` (0-1), `138` (`0` disables the light check) |
 | | `fDayStartHour`, `fDayEndHour` | `7.2`, `17.76` |
+| | `fLightLevelHysteresis` | `4`: in the sun, the light level has to drop this much below `fMinLightLevel` to count as shadow, so the plug does not flicker at the edge of a shadow |
+| | `fCheckIntervalSeconds` | `0.1`: time between two checks (the search for fire nearby runs once per second) |
 
 ## Building
 
