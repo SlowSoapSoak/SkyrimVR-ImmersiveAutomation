@@ -172,10 +172,12 @@ Upgrading from the test builds of *Immersive Sun*: delete `ImmersiveSunPluginScr
 | | `bFireHits`, `fFireHitSeconds` | `1`, `3` |
 | | `bOwnFireSpells` | `1` |
 | | `bNearFire`, `fFireRadius` | `1`, `350` (game units, about 5 m) |
+| | `sSmallFireModels`, `fSmallFireRadius` | `candle,chandel,sconce,torch`, `100`: small flames only count this close |
 | | `sFireModels` | `fire,flame,brazier,forge,smelter,lava,embers,hearth` |
-| | `sFireModelsExclude` | `firewood,fireplace,nofire,unlit` |
-| | `bSunlight`, `fMinSunGlare`, `fMinLightLevel` | `1`, `0.4` (0-1), `138` (`0` disables the light check) |
+| | `sFireModelsExclude` | unlit fires and things that only sound like fire, see the ini. Inventory items never count. |
+| | `bSunlight`, `fMinSunGlare`, `fMinLightLevel` | `1`, `0.4` (0-1), `180` (`0` disables the light check) |
 | | `fDayStartHour`, `fDayEndHour` | `7.2`, `17.76` |
+| | `fFireLightMargin` | `40`: the light level includes fire light, so within the fire radius it has to be this much higher to count as sunlight |
 | | `fLightLevelHysteresis` | `4`: in the sun, the light level has to drop this much below `fMinLightLevel` to count as shadow, so the plug does not flicker at the edge of a shadow |
 | | `fCheckIntervalSeconds` | `0.1`: time between two checks (the search for fire nearby runs once per second) |
 
