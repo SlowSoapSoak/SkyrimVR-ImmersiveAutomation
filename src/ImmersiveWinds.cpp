@@ -31,6 +31,8 @@ namespace ImmersiveWinds {
 		const int WEATHER_CHECK_INTERVAL_MS = 3000;
 		// the relay state is sent again after this time, in case a (udp) message got lost or the plug restarted
 		const float RELAY_RESEND_INTERVAL_SECONDS = 15.0f;
+		// a queued weather check that did not run after this time means the game stands still (minimized, frozen, long loading screen)
+		const float GAME_STALLED_SECONDS = 10.0f;
 		// an on or off time this long keeps the plug in one state
 		const float ALWAYS = 999999.0f;
 		const int MAX_LEVEL = 6;
@@ -552,7 +554,7 @@ namespace ImmersiveWinds {
 
 	float GetSunGlare(TESWeather* thisWeather)
 	{
-		return (thisWeather) ? static_cast<float>(thisWeather->data.sunGlare) : 0.0f;
+		return (thisWeather) ? static_cast<float>(static_cast<std::uint8_t>(thisWeather->data.sunGlare)) : 0.0f; // CommonLib types it signed, the value is 0-255
 	}
 
 	bool IsStormWeather(UInt32 weatherId)
@@ -700,7 +702,10 @@ namespace ImmersiveWinds {
 
 		auto dataHandler = RE::TESDataHandler::GetSingleton();
 		if (!dataHandler || !dataHandler->LookupModByName(PLUGIN_NAME))
+		{
+			LOG_ERR("%s is not loaded, the shout is not available.", PLUGIN_NAME);
 			return false;
+		}
 
 		LOG("Plugin is loaded. Trying to find forms.");
 
@@ -804,16 +809,28 @@ namespace ImmersiveWinds {
 		}
 	}
 
-	void RequestGameStateCheck()
+	// time the pending game state check was queued (steady_clock ticks), written by the timer and the menu events
+	std::atomic<std::chrono::steady_clock::rep> _checkQueuedAt(0);
+
+	// Queues UpdateFromGameState on the main thread. Returns false if a check is already queued.
+	bool RequestGameStateCheck()
 	{
 		// only one check at a time, so tasks do not pile up while the game does not process them (e.g. loading screens)
-		if (!_weatherTaskPending.exchange(true))
+		if (_weatherTaskPending.exchange(true))
 		{
-			SKSE::GetTaskInterface()->AddTask([]() {
-				UpdateFromGameState();
-				_weatherTaskPending = false;
-			});
+			return false;
 		}
+		_checkQueuedAt = std::chrono::steady_clock::now().time_since_epoch().count();
+		SKSE::GetTaskInterface()->AddTask([]() {
+			UpdateFromGameState();
+			_weatherTaskPending = false;
+		});
+		return true;
+	}
+
+	float SecondsSinceCheckQueued()
+	{
+		return SecondsSince(std::chrono::steady_clock::time_point(std::chrono::steady_clock::duration(_checkQueuedAt.load())));
 	}
 
 	// Background timer: queues UpdateFromGameState on the main thread every few seconds.
@@ -826,9 +843,12 @@ namespace ImmersiveWinds {
 				// also handled here, so the fan stops even if the game does not process tasks while the menu is open
 				_currentSwitchState = 0; //No fan in menu.
 			}
-			else
+			// a check that is still queued after GAME_STALLED_SECONDS means the game stands still
+			else if (!RequestGameStateCheck() && SecondsSinceCheckQueued() >= GAME_STALLED_SECONDS && _currentSwitchState != 0)
 			{
-				RequestGameStateCheck();
+				// no fan while nobody plays; the next check after the game continues restores the level
+				LOG("Game stands still, stopping the fan.");
+				_currentSwitchState = 0;
 			}
 			Sleep(WEATHER_CHECK_INTERVAL_MS);
 		}
