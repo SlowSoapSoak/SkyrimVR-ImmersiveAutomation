@@ -123,7 +123,7 @@ The gusts are simulated by the plugin, the game has no gust values (tree movemen
 | `fLullShare` | `0.25` | share of lulls (wind drops) among the gusts |
 | `fMotionStartSpeed` | `150` | speed (game units per second) from which movement adds wind; walking is below, running about 300 |
 | `fMotionFullSpeed` | `1000` | speed with the full motion wind (galloping horse) |
-| `fMotionWindMax` | `1.0` | motion wind at `fMotionFullSpeed`, `0` turns it off |
+| `fMotionWindMax` | `0.6` | motion wind at `fMotionFullSpeed`, `0` turns it off |
 | `fFanSpinUpSeconds` / `fFanSpinDownSeconds` | `1.5` / `4.0` | time constants of the fan: about the time to reach 2/3 of full speed / to lose 2/3 of its speed |
 | `fHysteresis` | `0.05` | tolerance before switching |
 | `fMinOnSeconds` / `fMinOffSeconds` | `1.0` / `1.0` | shortest on / off time |

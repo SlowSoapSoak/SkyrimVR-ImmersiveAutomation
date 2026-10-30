@@ -120,7 +120,7 @@ namespace ImmersiveWinds {
 		float _outsideMinWind = 0.1f;
 		float _motionStartSpeed = 150.0f;
 		float _motionFullSpeed = 1000.0f;
-		float _motionWindMax = 1.0f;
+		float _motionWindMax = 0.6f;
 
 		struct FloatSetting
 		{
@@ -142,7 +142,7 @@ namespace ImmersiveWinds {
 			{ "fLullShare", 0.25f, &_simSettings.lullShare },
 			{ "fMotionStartSpeed", 150.0f, &_motionStartSpeed },
 			{ "fMotionFullSpeed", 1000.0f, &_motionFullSpeed },
-			{ "fMotionWindMax", 1.0f, &_motionWindMax },
+			{ "fMotionWindMax", 0.6f, &_motionWindMax },
 			{ "fFanSpinUpSeconds", 1.5f, &_simSettings.fanSpinUpSeconds },
 			{ "fFanSpinDownSeconds", 4.0f, &_simSettings.fanSpinDownSeconds },
 			{ "fHysteresis", 0.05f, &_simSettings.hysteresis },
