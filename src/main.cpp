@@ -1,11 +1,8 @@
 #include "ImmersiveWinds.h"
-#include "EndGameDetect.h"
 
 #include <spdlog/sinks/basic_file_sink.h>
 
 #pragma comment(lib, "Ws2_32.lib")
-
-static EndGameDetect endGameDetect;
 
 namespace
 {

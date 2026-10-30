@@ -24,7 +24,7 @@ add_commonlibsse_plugin(
 )
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
 find_package(nlohmann_json CONFIG REQUIRED)
-target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 iphlpapi nlohmann_json::nlohmann_json)
+target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 iphlpapi winhttp nlohmann_json::nlohmann_json)
 target_compile_definitions(${PROJECT_NAME} PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX)
 
 # Deploy the built DLL straight into the game: cmake -DSKYRIM_DATA_DIR=".../Data"
