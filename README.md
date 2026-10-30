@@ -16,7 +16,7 @@ Mod page: https://www.nexusmods.com/skyrimspecialedition/mods/18346
 
 1. Copy `ImmersiveWindsPluginScript.dll` to `Data/SKSE/Plugins`.
 2. Optional: copy `ImmersiveWindsVR.esp` to `Data` and activate it in the load order. It adds the *Immersive Winds Call* shout, the fan control works without it.
-3. TP-Link: name the plug **`ImmersiveWindsPlug`** in the Kasa app. The plugin finds it in the local network and remembers its ip.
+3. TP-Link: name the plug **`ImmersiveWindsPlug`** in the Kasa app (or set another name in `sPlugName`). The plugin finds it in the local network and remembers its ip.
    http: see [Http switch](#http-switch).
 4. Start the game with `skse64_loader.exe` (VR: `sksevr_loader.exe`).
 
@@ -43,6 +43,7 @@ Missing keys are added with their default value, existing values are never overw
 | Key | Default | |
 |---|---|---|
 | `sSwitchType` | `tplink` | `tplink` or `http` |
+| `sPlugName` | `ImmersiveWindsPlug` | TP-Link: name of the plug in the Kasa app |
 | `bUseUdp` | `1` | TP-Link: send the commands with udp (`1`) or tcp (`0`) |
 | `bIntermittentModeEnabled` | `1` | `1`: levels 0-6 with on/off patterns. `0`: simple mode, fan on outside, off inside |
 | `bNoWindInMenu` | `0` | `1`: fan off while a menu pauses the game |
