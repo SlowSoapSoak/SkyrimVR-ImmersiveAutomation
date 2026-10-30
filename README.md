@@ -15,13 +15,24 @@ Mod page: https://www.nexusmods.com/skyrimspecialedition/mods/18346
 ## Installation
 
 1. Copy `ImmersiveWindsPluginScript.dll` to `Data/SKSE/Plugins`.
-2. Optional: `ImmersiveWindsVR.esp` adds the *Immersive Winds Call* shout. The fan control works without it.
+2. Optional: copy `ImmersiveWindsVR.esp` to `Data` and activate it in the load order. It adds the *Immersive Winds Call* shout, the fan control works without it.
 3. TP-Link: name the plug **`ImmersiveWindsPlug`** in the Kasa app. The plugin finds it in the local network and remembers its ip.
    http: see [Http switch](#http-switch).
+4. Start the game with `skse64_loader.exe` (VR: `sksevr_loader.exe`).
 
 On the first start the plugin writes all settings with their defaults to
 `Documents/My Games/<Skyrim Special Edition|Skyrim VR>/SKSE/immersiveWinds.ini`.
 The log is `ImmersiveWindsPluginScript.log` in the same folder (details with `bLoggingEnabled=1`).
+
+## When the fan stops
+
+Whatever the level, the fan is off
+
+- while the game window is not in the foreground (not in VR, the game keeps running there without focus),
+- when the game stands still for more than 10 s (frozen, long loading screen),
+- after the game exits.
+
+The level is restored as soon as the game continues. Menus only stop the fan with `bNoWindInMenu=1`.
 
 ## Settings (`immersiveWinds.ini`)
 
@@ -82,7 +93,7 @@ The level is the base value of the place plus the modifiers, at most 6. The shou
 
 ### `[IntermittendModeStrengthConfig]`
 
-On/off pattern of the levels 1-6 in seconds: `fIntermittentL<n>On`, `fIntermittentL<n>Off`, plus a random time of up to `fIntermittentL<n>RandomAddOn` / `RandomAddOff`. `On` or `Off` of `0` keeps the plug always off / on in that level. Level 0 is always off.
+On/off pattern of the levels 1-6 in seconds: `fIntermittentL<n>On`, `fIntermittentL<n>Off`, plus a random time of up to `fIntermittentL<n>RandomAddOn` / `RandomAddOff`. `On` or `Off` of `0` keeps the plug always off / on in that level, other values are raised to at least 1 second. Level 0 is always off.
 
 ## Http switch
 
