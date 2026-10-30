@@ -1,6 +1,9 @@
 #include "ImmersiveWinds.h"
+#include "HttpSwitch.h"
+#include "EndGameDetect.h"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <map>
@@ -14,11 +17,12 @@
 
 namespace ImmersiveWinds {
 
-	std::atomic<bool> _keepRunning(true);
-	std::atomic<long> _currentSwitchState(0);
-
 	namespace
 	{
+		std::atomic<bool> _keepRunning(true);
+		// the wind level 0-6, written by the game state check and the menu handling, read by the switch thread
+		std::atomic<long> _currentSwitchState(0);
+
 		using UInt32 = std::uint32_t;
 		using RE::BGSKeyword;
 		using RE::BGSLocation;
@@ -46,12 +50,19 @@ namespace ImmersiveWinds {
 		const char * INI_GENERAL = "GeneralModConfig";
 		const char * INI_STRENGTH = "IntermittendModeStrengthConfig";
 		const char * INI_LEVELS = "IntermittendModeLevelConfig";
+		const char * INI_HTTP = "HttpSwitch";
 
 		// ---- settings ----
 
 		bool _logsEnabled = false;
 		bool _noWindInMenu = false;
 		bool _intermittentModeEnabled = true;
+
+		// sSwitchType: "tplink" (TP-Link Kasa plug, found by a network scan) or "http" (sOnUrl / sOffUrl)
+		bool _useHttpSwitch = false;
+		std::string _httpMethod = "GET";
+		std::string _httpOnUrl;
+		std::string _httpOffUrl;
 
 		// level config, set by LoadSettings
 		int iHighAltitudeBegin = 0;
@@ -332,14 +343,25 @@ namespace ImmersiveWinds {
 
 	void ScanThread()
 	{
-		ScanAndCheckConnection();
+		// a http switch is addressed by its urls, there is nothing to search
+		if (!_useHttpSwitch) {
+			ScanAndCheckConnection();
+		}
 		_scanFinished = true;
+	}
+
+	bool SwitchPlug(long on)
+	{
+		if (_useHttpSwitch) {
+			return HttpSwitch::Request(_httpMethod, on ? _httpOnUrl : _httpOffUrl, _logsEnabled);
+		}
+		TPLinkHelper tpLinkConn(_logsEnabled);
+		return LoadConnectionConfig(tpLinkConn) && tpLinkConn.SwitchRelayState(on);
 	}
 
 	void SendRelayState(long on)
 	{
-		TPLinkHelper tpLinkConn(_logsEnabled);
-		if (LoadConnectionConfig(tpLinkConn) && !tpLinkConn.SwitchRelayState(on)) {
+		if (!SwitchPlug(on)) {
 			LOG("Switching the plug %s failed", on ? "on" : "off");
 		}
 		_lastRelaySend = std::chrono::steady_clock::now();
@@ -419,6 +441,10 @@ namespace ImmersiveWinds {
 			WritePrivateProfileStringA(INI_INTERNAL, "sModVersion", MOD_VERSION.c_str(), sExecPath.c_str());
 		}
 		WriteIniIfMissing(INI_INTERNAL, "sTpLinkPlugIp", "", sExecPath);
+		WriteIniIfMissing(INI_GENERAL, "sSwitchType", "tplink", sExecPath);
+		WriteIniIfMissing(INI_HTTP, "sHttpMethod", "GET", sExecPath);
+		WriteIniIfMissing(INI_HTTP, "sOnUrl", "", sExecPath);
+		WriteIniIfMissing(INI_HTTP, "sOffUrl", "", sExecPath);
 
 		for (const IntSetting & setting : GENERAL_SETTINGS) {
 			WriteIniIfMissing(setting.section, setting.key, std::to_string(setting.defaultValue), sExecPath);
@@ -504,6 +530,14 @@ namespace ImmersiveWinds {
 		_logsEnabled = ReadGeneralSetting("bLoggingEnabled", sExecPath) > 0;
 		_noWindInMenu = ReadGeneralSetting("bNoWindInMenu", sExecPath) > 0;
 		_intermittentModeEnabled = ReadGeneralSetting("bIntermittentModeEnabled", sExecPath) > 0;
+
+		_useHttpSwitch = _stricmp(Trim(ReadIniString(INI_GENERAL, "sSwitchType", "tplink", sExecPath)).c_str(), "http") == 0;
+		_httpMethod = Trim(ReadIniString(INI_HTTP, "sHttpMethod", "GET", sExecPath));
+		_httpOnUrl = Trim(ReadIniString(INI_HTTP, "sOnUrl", "", sExecPath));
+		_httpOffUrl = Trim(ReadIniString(INI_HTTP, "sOffUrl", "", sExecPath));
+		if (_useHttpSwitch) {
+			LOG_ERR("Using the http switch: %s %s / %s", _httpMethod.c_str(), _httpOnUrl.c_str(), _httpOffUrl.c_str());
+		}
 
 		_levelValues[0] = LevelValues(0, ALWAYS, 0, 0);
 
@@ -901,6 +935,14 @@ namespace ImmersiveWinds {
 		teach.store(false);
 	}
 
+	void SwitchOffOnExit()
+	{
+		_currentSwitchState = 0;
+		_keepRunning = false;
+		// before the settings are loaded _useHttpSwitch is false and the plug ip comes from the ini file
+		SwitchPlug(0);
+	}
+
 	void StartMod()
 	{
 		// ponytail: the VR build patched an unknown game function here (SafeWriteJump at VR 0x127B460+0x38D);
@@ -929,5 +971,12 @@ namespace ImmersiveWinds {
 		va_end(args);
 
 		_MESSAGE("%s", logBuffer);
+	}
+
+	namespace
+	{
+		// Switches the plug off when the game exits. Defined last in this file on purpose: objects of one
+		// file are destroyed in reverse order, so the settings and connection data above still exist then.
+		EndGameDetect endGameDetect;
 	}
 }

@@ -1,5 +1,4 @@
 #pragma once
-#include <atomic>
 #include <string>
 #include "SPScanner.h"
 #include "TPLinkSPHelper.h"
@@ -22,10 +21,6 @@ namespace ImmersiveWinds
 	#define LOG_ERR(fmt, ...) Log(LOGLEVEL_ERR, fmt, ##__VA_ARGS__)
 	#define LOG_INFO(fmt, ...) Log(LOGLEVEL_INFO, fmt, ##__VA_ARGS__)
 
-	// shared with EndGameDetect, all other state lives in ImmersiveWinds.cpp
-	extern std::atomic<bool> _keepRunning;
-	extern std::atomic<long> _currentSwitchState;
-
 	// My Games\<Skyrim Special Edition|Skyrim VR|...>\SKSE\immersiveWinds.ini, matching the running game
 	std::string GetIniPath();
 
@@ -34,4 +29,7 @@ namespace ImmersiveWinds
 
 	// the shout words are taught again on the next check (new game / loaded game)
 	void ResetTeach();
+
+	// stops the plug control and switches the plug off, when the game exits
+	void SwitchOffOnExit();
 }
