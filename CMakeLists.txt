@@ -16,16 +16,42 @@ add_subdirectory(extern/CommonLibSSE-NG)
 include(extern/CommonLibSSE-NG/cmake/CommonLibSSE.cmake) # add_commonlibsse_plugin(), only auto-included for prebuilt CommonLib
 
 file(GLOB sources CONFIGURE_DEPENDS src/*.cpp src/*.h)
+find_package(nlohmann_json CONFIG REQUIRED)
 
+# settings both plugins share
+function(immersive_plugin_settings TARGET)
+	target_precompile_headers(${TARGET} PRIVATE src/PCH.h)
+	target_include_directories(${TARGET} PRIVATE src)
+	target_link_libraries(${TARGET} PRIVATE ws2_32 iphlpapi winhttp nlohmann_json::nlohmann_json)
+	target_compile_definitions(${TARGET} PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX)
+endfunction()
+
+# Immersive Winds: fan control
 add_commonlibsse_plugin(
 	${PROJECT_NAME}
 	AUTHOR "shizof"
 	SOURCES ${sources}
 )
-target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
-find_package(nlohmann_json CONFIG REQUIRED)
-target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 iphlpapi winhttp nlohmann_json::nlohmann_json)
-target_compile_definitions(${PROJECT_NAME} PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX)
+immersive_plugin_settings(${PROJECT_NAME})
+
+# Immersive Sun: heat lamp control, shares the plug communication with Immersive Winds
+file(GLOB sun_sources CONFIGURE_DEPENDS sun/*.cpp sun/*.h)
+set(shared_sources
+	src/DeviceInfo.cpp
+	src/Enumerations.cpp
+	src/HttpSwitch.cpp
+	src/NetworkInterfaceInfo.cpp
+	src/PlugFinder.cpp
+	src/SPScanner.cpp
+	src/TPLinkSPHelper.cpp
+)
+add_commonlibsse_plugin(
+	ImmersiveSunPluginScript
+	AUTHOR "shizof"
+	VERSION 1.1.0
+	SOURCES ${sun_sources} ${shared_sources}
+)
+immersive_plugin_settings(ImmersiveSunPluginScript)
 
 # Deploy the built DLL straight into the game: cmake -DSKYRIM_DATA_DIR=".../Data"
 set(SKYRIM_DATA_DIR "" CACHE PATH "Skyrim Data folder to copy the plugin into after each build")
@@ -34,6 +60,7 @@ if(SKYRIM_DATA_DIR)
 		TARGET ${PROJECT_NAME} POST_BUILD
 		COMMAND ${CMAKE_COMMAND} -E make_directory "${SKYRIM_DATA_DIR}/SKSE/Plugins"
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${PROJECT_NAME}> $<TARGET_PDB_FILE:${PROJECT_NAME}> "${SKYRIM_DATA_DIR}/SKSE/Plugins"
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:ImmersiveSunPluginScript> $<TARGET_PDB_FILE:ImmersiveSunPluginScript> "${SKYRIM_DATA_DIR}/SKSE/Plugins"
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/Winds/ImmersiveWindsVR.esp" "${SKYRIM_DATA_DIR}"
 	)
 endif()

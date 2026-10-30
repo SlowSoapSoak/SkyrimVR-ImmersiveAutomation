@@ -44,4 +44,6 @@ jobs:
           path: |
             build/ImmersiveWindsPluginScript.dll
             build/ImmersiveWindsPluginScript.pdb
+            build/ImmersiveSunPluginScript.dll
+            build/ImmersiveSunPluginScript.pdb
             Winds/ImmersiveWindsVR.esp
