@@ -33,8 +33,7 @@ if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
 # activate the ESP once (the shout needs it, the fan control works without it)
 $plugins = "$env:LOCALAPPDATA\Skyrim Special Edition\Plugins.txt"
-if (-not (Select-String -Path $plugins -Pattern '^\*?ImmersiveWindsVR\.esp$' -Quiet)) {
-	Add-Content -Path $plugins -Value '*ImmersiveWindsVR.esp'
-}
+$active = @(Get-Content $plugins | Where-Object { $_ -notmatch '^\*?ImmersiveWindsVR\.esp$' }) + '*ImmersiveWindsVR.esp'
+Set-Content -Path $plugins -Value $active
 
 Write-Host "Deployed to $env:SKYRIM_DATA_DIR. Start the game with skse64_loader.exe."
