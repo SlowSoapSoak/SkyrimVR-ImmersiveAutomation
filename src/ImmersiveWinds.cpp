@@ -1,5 +1,15 @@
 #include "ImmersiveWinds.h"
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstring>
+#include <map>
 #include <mutex>
+#include <random>
+#include <sstream>
+#include <thread>
+#include <unordered_set>
+#include <vector>
 
 
 namespace ImmersiveWinds {
@@ -7,23 +17,261 @@ namespace ImmersiveWinds {
 	std::atomic<bool> _keepRunning(true);
 	std::atomic<long> _currentSwitchState(0);
 
-	// workingIp and useUDP are written by the scan thread and read by the switch threads
-	static std::mutex _connectionConfigMutex;
+	namespace
+	{
+		using UInt32 = std::uint32_t;
+		using RE::BGSKeyword;
+		using RE::BGSLocation;
+		using RE::TESShout;
+		using RE::TESWeather;
+		using RE::TESWordOfPower;
 
-	static const int SCAN_MAX_ATTEMPTS = 5;
-	static const int SCAN_RETRY_DELAY_MS = 10000;
-	static const int WEATHER_CHECK_INTERVAL_MS = 3000;
-	// the relay state is sent again after this time, in case a (udp) message got lost or the plug restarted
-	static const float RELAY_RESEND_INTERVAL_SECONDS = 15.0f;
+		const int SCAN_MAX_ATTEMPTS = 5;
+		const int SCAN_RETRY_DELAY_MS = 10000;
+		const int WEATHER_CHECK_INTERVAL_MS = 3000;
+		// the relay state is sent again after this time, in case a (udp) message got lost or the plug restarted
+		const float RELAY_RESEND_INTERVAL_SECONDS = 15.0f;
+		// an on or off time this long keeps the plug in one state
+		const float ALWAYS = 999999.0f;
+		const int MAX_LEVEL = 6;
 
-	static std::atomic<bool> _weatherTaskPending(false);
-	static std::atomic<bool> _scanFinished(false);
-	static std::chrono::steady_clock::time_point _lastRelaySend;
+		const char * PLUG_NAME = "ImmersiveWindsPlug";
+		const char * PLUGIN_NAME = "ImmersiveWindsVR.esp";
+
+		// ini sections (names kept for compatibility with existing ini files)
+		const char * INI_INTERNAL = "Internal";
+		const char * INI_GENERAL = "GeneralModConfig";
+		const char * INI_STRENGTH = "IntermittendModeStrengthConfig";
+		const char * INI_LEVELS = "IntermittendModeLevelConfig";
+
+		// ---- settings ----
+
+		bool _logsEnabled = false;
+		bool _noWindInMenu = false;
+		bool _intermittentModeEnabled = true;
+
+		// level config, set by LoadSettings
+		int iHighAltitudeBegin = 0;
+		int iVeryHighAltitudeBegin = 0;
+		int iInsideHouseBase = 0;
+		int iInsideDungeonBase = 0;
+		int iInsideCaveBase = 0;
+		int iInsideIceCaveBase = 0;
+		int iOutsideBase = 0;
+		int iOutsideTimeDayMod = 0;
+		int iOutsideTimeNightMod = 0;
+		int iOutsideWeatherPleasantMod = 0;
+		int iOutsideWeatherCloudyMod = 0;
+		int iOutsideWeatherRainMod = 0;
+		int iOutsideWeatherSnowMod = 0;
+		int iOutsideWeatherStormMod = 0;
+		int iOutsideAltitudeHighMod = 0;
+		int iOutsideAltitudeVeryHighMod = 0;
+
+		struct IntSetting
+		{
+			const char * section;
+			const char * key;
+			int defaultValue;
+			int * value; // nullptr: only written as default, read elsewhere
+		};
+
+		// the single place for names and default values of the integer settings
+		const IntSetting GENERAL_SETTINGS[] = {
+			{ INI_GENERAL, "bUseUdp", 1, nullptr }, // read by TPLinkHelper
+			{ INI_GENERAL, "bIntermittentModeEnabled", 1, nullptr },
+			{ INI_GENERAL, "bLoggingEnabled", 0, nullptr },
+			{ INI_GENERAL, "bNoWindInMenu", 0, nullptr },
+		};
+
+		const IntSetting LEVEL_SETTINGS[] = {
+			{ INI_LEVELS, "iInsideHouseBase", 0, &iInsideHouseBase },
+			{ INI_LEVELS, "iInsideDungeonBase", 1, &iInsideDungeonBase },
+			{ INI_LEVELS, "iInsideCaveBase", 1, &iInsideCaveBase },
+			{ INI_LEVELS, "iInsideIceCaveBase", 2, &iInsideIceCaveBase },
+			{ INI_LEVELS, "iOutsideBase", 3, &iOutsideBase },
+			{ INI_LEVELS, "iOutsideTimeDayMod", 0, &iOutsideTimeDayMod },
+			{ INI_LEVELS, "iOutsideTimeNightMod", 1, &iOutsideTimeNightMod },
+			{ INI_LEVELS, "iOutsideWeatherPleasantMod", 0, &iOutsideWeatherPleasantMod },
+			{ INI_LEVELS, "iOutsideWeatherCloudyMod", 1, &iOutsideWeatherCloudyMod },
+			{ INI_LEVELS, "iOutsideWeatherRainMod", 1, &iOutsideWeatherRainMod },
+			{ INI_LEVELS, "iOutsideWeatherSnowMod", 2, &iOutsideWeatherSnowMod },
+			{ INI_LEVELS, "iOutsideWeatherStormMod", 3, &iOutsideWeatherStormMod },
+			{ INI_LEVELS, "iOutsideAltitudeHighMod", 1, &iOutsideAltitudeHighMod },
+			{ INI_LEVELS, "iOutsideAltitudeVeryHighMod", 2, &iOutsideAltitudeVeryHighMod },
+			{ INI_LEVELS, "iHighAltitudeBegin", 4000, &iHighAltitudeBegin },
+			{ INI_LEVELS, "iVeryHighAltitudeBegin", 18000, &iVeryHighAltitudeBegin },
+		};
+
+		// timing of the levels 1-6 in seconds: on, off, random time added to on, random time added to off
+		struct LevelTiming
+		{
+			float on;
+			float off;
+			float randomOn;
+			float randomOff;
+		};
+
+		const std::array<LevelTiming, MAX_LEVEL> DEFAULT_LEVEL_TIMINGS = { {
+			{ 1.0f, 2.0f, 0.7f, 3.0f },
+			{ 1.5f, 1.0f, 0.5f, 3.0f },
+			{ 1.0f, 1.0f, 1.5f, 4.0f },
+			{ 2.0f, 1.0f, 1.5f, 1.8f },
+			{ 4.0f, 1.0f, 0.2f, 0.8f },
+			{ ALWAYS, 0.0f, 0.0f, 0.0f },
+		} };
+
+		// Weathers that count as storm (iOutsideWeatherStormMod). "Plugin:FormID" entries are resolved with the
+		// load order, bare "FormID" entries match that id in any plugin (the behaviour of older versions).
+		const char * DEFAULT_STORM_WEATHERS =
+			"Skyrim.esm:10C32F,Skyrim.esm:10A241,Skyrim.esm:10A23C,Skyrim.esm:0D4886,Skyrim.esm:0C8221,Skyrim.esm:0C8220," // vanilla
+			"001330,001318,"                     // True Storms
+			"18BE6E,187DD3,"                     // Vivid Weathers
+			"00E001,00E002,00E003,"              // Mythical Ages
+			"12DDEE,12DDED,12DDEC,16B287";
+
+		std::unordered_set<UInt32> _stormWeatherFormIds;  // full form ids
+		std::unordered_set<UInt32> _stormWeatherLocalIds; // ids without load order index
+
+		// ---- plug control state (switch thread) ----
+
+		struct LevelValues {
+			LevelValues() {
+			}
+			LevelValues(float counterLeaveOnMax, float counterLeaveOffMax, float randomOnAdd, float randomOffAdd) :
+				distributionOn(0, randomOnAdd),
+				distributionOff(0, randomOffAdd) {
+				this->counterLeaveOnMax = counterLeaveOnMax;
+				this->counterLeaveOffMax = counterLeaveOffMax;
+				this->randomOnAdd = randomOnAdd;
+				this->randomOffAdd = randomOffAdd;
+			}
+			int counterLeaveCurrentState = 0;
+			float counterLeaveOnMax = 1;
+			float counterLeaveOffMax = 1;
+			float randomOffAdd = 0;
+			float randomOnAdd = 0;
+			float currentRandomOff = 0;
+			float currentRandomOn = 0;
+			std::uniform_real_distribution<float> distributionOn;
+			std::uniform_real_distribution<float> distributionOff;
+		};
+
+		std::map<int, LevelValues> _levelValues;
+		long _previousSwitchState = 0;
+		bool _s1Swap = true;
+		std::chrono::steady_clock::time_point _beginTime;
+		std::chrono::steady_clock::time_point _lastRelaySend;
+		std::default_random_engine _generator;
+
+		// workingIp and useUDP are written by the scan thread and read by the switch threads
+		std::mutex _connectionConfigMutex;
+		std::string workingIp;
+		int useUDP = -1;
+
+		std::atomic<bool> _scanFinished(false);
+		std::atomic<bool> _weatherTaskPending(false);
+
+		// ---- game state (main thread) ----
+
+		std::atomic<bool> teach(false);
+		long _shoutLevel = 0;
+
+		// last values read from the game
+		bool _internalCell = false;
+		float _altitude = 0;
+		long _weatherClass = 0;
+		BGSLocation * _currentLocation = nullptr;
+		float _inGameTime = 0;
+		float _sunglare = 0;
+		UInt32 _weatherId = 0;
+
+		// worldspaces that are treated as interior (vanilla, e.g. Blackreach and Sovngarde)
+		const std::vector<UInt32> notExteriorWorlds = { 0x69857, 0x1EE62, 0x20DCB, 0x1FAE2, 0x34240, 0x50015, 0x2C965, 0x29AB7, 0x4F838, 0x3A9D6, 0x243DE, 0xC97EB, 0xC350D, 0x1CDD3, 0x1CDD9, 0x21EDB, 0x1E49D, 0x2B101, 0x2A9D8, 0x20BFE };
+
+		// location types that count as a house (iInsideHouseBase), other interiors use the dungeon and cave values
+		const UInt32 HOUSE_KEYWORD_IDS[] = {
+			0x0130DC, // LocTypeDwelling
+			0x018EF0, // LocTypeFarm
+			0x01CD5A, // LocTypeGuild
+			0x01CB87, // LocTypeInn
+			0x01CD59, // LocTypeJail
+			0x018EF2, // LocTypeLumberMill
+			0x0504F9, // LocTypeStewardsDwelling
+			0x01CB86, // LocTypeStore
+			0x0FC1A3, // LocTypePlayerHouse
+			0x01CB85, // LocTypeHouse
+			0x01CD57, // LocTypeCastle
+		};
+		const UInt32 KEYWORD_ID_LOC_SET_CAVE = 0x0130EF;
+		const UInt32 KEYWORD_ID_LOC_SET_CAVE_ICE = 0x100819;
+		const UInt32 KEYWORD_ID_LOC_SET_OUTDOOR = 0x0130F3;
+
+		std::vector<BGSKeyword *> _houseKeywords;
+		BGSKeyword * keywordLocSetCave = nullptr;
+		BGSKeyword * keywordLocSetCaveIce = nullptr;
+		BGSKeyword * keywordLocSetOutdoor = nullptr;
+
+		// forms of ImmersiveWindsVR.esp (local ids, resolved in FillFormIds)
+		UInt32 ImmersiveWindsCallShoutFormId = 0xC15C;
+		UInt32 WordRazenFormId = 0xC160;
+		UInt32 WordGanFormId = 0xC161;
+		UInt32 ImmersiveWindsCallEffect1FormId = 0xC15E;
+		UInt32 ImmersiveWindsCallEffect2FormId = 0xC15F;
+
+		TESShout * ImmersiveWindsCallShout = nullptr;
+		TESWordOfPower * WordRazen = nullptr;
+		TESWordOfPower * WordGan = nullptr;
+	}
+
+	// ---- helpers ----
 
 	float SecondsSince(const std::chrono::steady_clock::time_point & start)
 	{
 		return std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
 	}
+
+	std::string Trim(const std::string & text)
+	{
+		const size_t begin = text.find_first_not_of(" \t");
+		if (begin == std::string::npos) {
+			return "";
+		}
+		return text.substr(begin, text.find_last_not_of(" \t") - begin + 1);
+	}
+
+	std::string GetIniPath()
+	{
+		const auto dir = SKSE::log::log_directory();
+		return dir ? (*dir / "immersiveWinds.ini").string() : "immersiveWinds.ini";
+	}
+
+	std::string ReadIniString(const char * section, const char * key, const char * defaultValue, const std::string & path)
+	{
+		char buffer[4096];
+		GetPrivateProfileStringA(section, key, defaultValue, buffer, sizeof(buffer), path.c_str());
+		return buffer;
+	}
+
+	bool IniHasKey(const char * section, const char * key, const std::string & path)
+	{
+		const char * missing = "<missing>";
+		return ReadIniString(section, key, missing, path) != missing;
+	}
+
+	void WriteIniIfMissing(const char * section, const char * key, const std::string & value, const std::string & path)
+	{
+		if (!IniHasKey(section, key, path)) {
+			WritePrivateProfileStringA(section, key, value.c_str(), path.c_str());
+		}
+	}
+
+	std::string StrengthKey(int level, const char * suffix)
+	{
+		return "fIntermittentL" + std::to_string(level) + suffix;
+	}
+
+	// ---- connection ----
 
 	bool LoadConnectionConfig(TPLinkHelper & tpLinkConn)
 	{
@@ -37,22 +285,10 @@ namespace ImmersiveWinds {
 		workingIp = ip;
 	}
 
-	// My Games\<Skyrim Special Edition|Skyrim VR|...>\SKSE\immersiveWinds.ini, matching the running game
-	std::string GetIniPath()
-	{
-		const auto dir = SKSE::log::log_directory();
-		return dir ? (*dir / "immersiveWinds.ini").string() : "immersiveWinds.ini";
-	}
-
 	void ScanAndCheckConnection()
 	{
-		const std::string plugName = "ImmersiveWindsPlug";
-		const std::string sExecPath = ImmersiveWinds::GetIniPath();
-
-		char iniFileBuffer[100];
-		GetPrivateProfileStringA("Internal", "sTpLinkPlugIp", "",
-			iniFileBuffer, 100, sExecPath.c_str());
-		const std::string savedIp(iniFileBuffer);
+		const std::string sExecPath = GetIniPath();
+		const std::string savedIp = ReadIniString(INI_INTERNAL, "sTpLinkPlugIp", "", sExecPath);
 		LOG("READ ini file: %s", savedIp.c_str());
 
 		if (savedIp.empty()) {
@@ -66,7 +302,7 @@ namespace ImmersiveWinds {
 			else {
 				LOG("Connect Succeeded");
 				// check if correct device:
-				if (LoadConnectionConfig(tpLinkConn) && tpLinkConn.GetSystemInfo().alias() == plugName) {
+				if (LoadConnectionConfig(tpLinkConn) && tpLinkConn.GetSystemInfo().alias() == PLUG_NAME) {
 					return;
 				}
 				LOG("wrong device");
@@ -77,10 +313,10 @@ namespace ImmersiveWinds {
 		// A failed scan keeps the saved ip, so a plug that is only temporarily offline is not forgotten.
 		for (int attempt = 1; attempt <= SCAN_MAX_ATTEMPTS && _keepRunning; attempt++) {
 			SPScanner scanner;
-			const std::string ipOfDevice = scanner.ScanForTpPlug(plugName);
+			const std::string ipOfDevice = scanner.ScanForTpPlug(PLUG_NAME);
 			LOG("scan %d returned: %s", attempt, ipOfDevice.c_str());
 			if (!ipOfDevice.empty()) {
-				WritePrivateProfileStringA("Internal", "sTpLinkPlugIp", ipOfDevice.c_str(), sExecPath.c_str());
+				WritePrivateProfileStringA(INI_INTERNAL, "sTpLinkPlugIp", ipOfDevice.c_str(), sExecPath.c_str());
 				SetWorkingIp(ipOfDevice);
 				return;
 			}
@@ -88,7 +324,7 @@ namespace ImmersiveWinds {
 				Sleep(SCAN_RETRY_DELAY_MS);
 			}
 		}
-		LOG_ERR("Could not find a plug named %s", plugName.c_str());
+		LOG_ERR("Could not find a plug named %s", PLUG_NAME);
 	}
 
 	void ScanThread()
@@ -106,48 +342,35 @@ namespace ImmersiveWinds {
 		_lastRelaySend = std::chrono::steady_clock::now();
 	}
 
+	// Switches the plug on and off with the timing of the current level.
 	void SwitchStateControllThread() {
 		// wait until the plug was found, otherwise the first switch commands would get lost
 		while (!_scanFinished && _keepRunning) {
 			Sleep(100);
 		}
 
-		while (_keepRunning) 
+		while (_keepRunning)
 		{
 			// read the state once, it is changed by the weather thread
 			const long currentState = _currentSwitchState;
 			LevelValues & level = _levelValues[currentState];
 
 			if (_previousSwitchState != currentState) {
-				// state change detected!
-				// reset all state variables:
-				//std::cout << "var reset\n";
+				// state change detected, reset all state variables
 				LOG("\nSwitching mode to %ld", currentState);
-				
+
 				_s1Swap = true;
 				level.counterLeaveCurrentState = 0;
 				_previousSwitchState = currentState;
 				_beginTime = std::chrono::steady_clock::now();
 			}
 
-			//if (_shoutLevel > 0) {
-			//	if (float(clock() - _shoutBeginTime) > 30) {
-			//		// after 30 seconds the wind gets back to normal.
-			//		_shoutLevel = 0;
-			//		UpdateNativeWindStateInternal();
-			//	}
-			//}
-
-			// handle states:
 			if (_s1Swap && level.counterLeaveOnMax != 0) {
 				if (level.counterLeaveCurrentState == 0) {
-					//std::cout << "Mode" << currentSwitchState << ": Swap on\n";
 					if (level.randomOnAdd > 0) {
 						level.currentRandomOn = level.distributionOn(_generator);
 					}
-					
 					LOG("SwitchingOn");
-					
 					SendRelayState(1);
 				}
 				else if (SecondsSince(_lastRelaySend) >= RELAY_RESEND_INTERVAL_SECONDS) {
@@ -165,10 +388,7 @@ namespace ImmersiveWinds {
 					if (level.randomOffAdd > 0) {
 						level.currentRandomOff = level.distributionOff(_generator);
 					}
-					
 					LOG("SwitchingOff");
-					
-					//std::cout << "Mode" << currentSwitchState << ": Swap off\n";
 					SendRelayState(0);
 				}
 				else if (SecondsSince(_lastRelaySend) >= RELAY_RESEND_INTERVAL_SECONDS) {
@@ -186,372 +406,193 @@ namespace ImmersiveWinds {
 		LOG_ERR("Exiting");
 	}
 
+	// ---- settings ----
+
+	// Adds every missing setting with its default value, existing values are kept.
 	void WriteDefaultsToIniFile() {
-		std::string sExecPath = GetIniPath();
-		if (INVALID_FILE_ATTRIBUTES == GetFileAttributesA(sExecPath.c_str()) && GetLastError() == ERROR_FILE_NOT_FOUND)
-		{
-			std::ofstream outfile(sExecPath);
-			//outfile << std::endl;
-			outfile.close();
+		const std::string sExecPath = GetIniPath();
+
+		if (ReadIniString(INI_INTERNAL, "sModVersion", "", sExecPath) != MOD_VERSION) {
+			WritePrivateProfileStringA(INI_INTERNAL, "sModVersion", MOD_VERSION.c_str(), sExecPath.c_str());
+		}
+		WriteIniIfMissing(INI_INTERNAL, "sTpLinkPlugIp", "", sExecPath);
+
+		for (const IntSetting & setting : GENERAL_SETTINGS) {
+			WriteIniIfMissing(setting.section, setting.key, std::to_string(setting.defaultValue), sExecPath);
 		}
 
-		// check the version:
-		char iniFileBuffer[100];
-		GetPrivateProfileStringA("Internal", "sModVersion", "",
-			iniFileBuffer, 100, sExecPath.c_str());
-		std::string sCurrentVersion(iniFileBuffer);
+		for (int i = 0; i < MAX_LEVEL; i++) {
+			const LevelTiming & timing = DEFAULT_LEVEL_TIMINGS[i];
+			WriteIniIfMissing(INI_STRENGTH, StrengthKey(i + 1, "On").c_str(), std::to_string(timing.on), sExecPath);
+			WriteIniIfMissing(INI_STRENGTH, StrengthKey(i + 1, "Off").c_str(), std::to_string(timing.off), sExecPath);
+			WriteIniIfMissing(INI_STRENGTH, StrengthKey(i + 1, "RandomAddOn").c_str(), std::to_string(timing.randomOn), sExecPath);
+			WriteIniIfMissing(INI_STRENGTH, StrengthKey(i + 1, "RandomAddOff").c_str(), std::to_string(timing.randomOff), sExecPath);
+		}
 
-		std::ifstream iniFileContentStream(sExecPath);
-		std::string iniFileContents;
-		if (iniFileContentStream.is_open())
-		{
-			std::string line;
-			while (getline(iniFileContentStream, line))
-			{
-				iniFileContents.append(line);
+		for (const IntSetting & setting : LEVEL_SETTINGS) {
+			WriteIniIfMissing(setting.section, setting.key, std::to_string(setting.defaultValue), sExecPath);
+		}
+		WriteIniIfMissing(INI_LEVELS, "sStormWeathers", DEFAULT_STORM_WEATHERS, sExecPath);
+	}
+
+	int ReadIniInt(const IntSetting & setting, const std::string & path)
+	{
+		return GetPrivateProfileIntA(setting.section, setting.key, setting.defaultValue, path.c_str());
+	}
+
+	int ReadGeneralSetting(const char * key, const std::string & path)
+	{
+		for (const IntSetting & setting : GENERAL_SETTINGS) {
+			if (strcmp(setting.key, key) == 0) {
+				return ReadIniInt(setting, path);
 			}
-			iniFileContentStream.close();
+		}
+		return 0;
+	}
 
-		}
-		else {
-			//LOG("Error: could not create ini file.");
-		}
+	float ReadIniFloat(const char * section, const std::string & key, float defaultValue, const std::string & path)
+	{
+		return strtof(ReadIniString(section, key.c_str(), std::to_string(defaultValue).c_str(), path).c_str(), nullptr);
+	}
 
-		if (iniFileContents.find("sModVersion") == std::string::npos) {
-			WritePrivateProfileStringA("Internal", "sModVersion", MOD_VERSION.c_str(), sExecPath.c_str());
-		}
-		else if(sCurrentVersion != MOD_VERSION){
-			WritePrivateProfileStringA("Internal", "sModVersion", MOD_VERSION.c_str(), sExecPath.c_str());
-		}
+	// Reads the list of storm weathers, see DEFAULT_STORM_WEATHERS. Needs the game data (load order).
+	void LoadStormWeathers(const std::string & list)
+	{
+		_stormWeatherFormIds.clear();
+		_stormWeatherLocalIds.clear();
 
-		if (iniFileContents.find("sTpLinkPlugIp") == std::string::npos) {
-			WritePrivateProfileStringA("Internal", "sTpLinkPlugIp", "", sExecPath.c_str());
-		}
-		if (iniFileContents.find("bUseUdp") == std::string::npos) {
-			WritePrivateProfileStringA("GeneralModConfig", "bUseUdp", std::to_string(1).c_str(), sExecPath.c_str());
-		}
-		if (iniFileContents.find("bIntermittentModeEnabled") == std::string::npos) {
-			WritePrivateProfileStringA("GeneralModConfig", "bIntermittentModeEnabled", std::to_string(1).c_str(),
-				sExecPath.c_str());
-		}
-		if (iniFileContents.find("bLoggingEnabled") == std::string::npos) {
-			WritePrivateProfileStringA("GeneralModConfig", "bLoggingEnabled", std::to_string(0).c_str(),
-				sExecPath.c_str());
-		}
-		if (iniFileContents.find("bNoWindInMenu") == std::string::npos) {
-			WritePrivateProfileStringA("GeneralModConfig", "bNoWindInMenu", std::to_string(0).c_str(),
-				sExecPath.c_str());
-		}
-
-		// write all IntermittendModeStrengthConfig vars
-		for (int i = 1; i < 7; i++) {
-			std::string intermittendLXOn = "fIntermittentL" + std::to_string(i) + "On";
-			std::string intermittendLXOff = "fIntermittentL" + std::to_string(i) + "Off";
-			std::string intermittendLXRandomAddOn = "fIntermittentL" + std::to_string(i) + "RandomAddOn";
-			std::string intermittendLXRandomAddOff = "fIntermittentL" + std::to_string(i) + "RandomAddOff";
-			
-			if (iniFileContents.find(intermittendLXOn) == std::string::npos) {
-				WritePrivateProfileStringA("IntermittendModeStrengthConfig", intermittendLXOn.c_str(), std::to_string(DEFAULTS_INTERMITTENT[i - 1][0]).c_str(),
-					sExecPath.c_str());
+		auto dataHandler = RE::TESDataHandler::GetSingleton();
+		std::stringstream stream(list);
+		std::string entry;
+		while (std::getline(stream, entry, ',')) {
+			entry = Trim(entry);
+			if (entry.empty()) {
+				continue;
 			}
-			if (iniFileContents.find(intermittendLXOff) == std::string::npos) {
-				WritePrivateProfileStringA("IntermittendModeStrengthConfig", intermittendLXOff.c_str(), std::to_string(DEFAULTS_INTERMITTENT[i - 1][1]).c_str(),
-					sExecPath.c_str());
-			}
-			if (iniFileContents.find(intermittendLXRandomAddOn) == std::string::npos) {
-				WritePrivateProfileStringA("IntermittendModeStrengthConfig", intermittendLXRandomAddOn.c_str(), std::to_string(DEFAULTS_INTERMITTENT[i - 1][2]).c_str(),
-					sExecPath.c_str());
-			}
-			if (iniFileContents.find(intermittendLXRandomAddOff) == std::string::npos) {
-				WritePrivateProfileStringA("IntermittendModeStrengthConfig", intermittendLXRandomAddOff.c_str(), std::to_string(DEFAULTS_INTERMITTENT[i - 1][3]).c_str(),
-					sExecPath.c_str());
-			}
-			//LOG("looping config write");
-		}
 
-		//LOG("looping config write done");
-		
-		if (iniFileContents.find("iInsideHouseBase") == std::string::npos) {
-			WritePrivateProfileStringA("IntermittendModeLevelConfig", "iInsideHouseBase", std::to_string(DEFAULT_INTERMITTENT_iInsideHouseBase).c_str(),
-				sExecPath.c_str());
+			// plugin file names can not contain ':'
+			const size_t separator = entry.rfind(':');
+			const std::string idText = Trim(separator == std::string::npos ? entry : entry.substr(separator + 1));
+			char * end = nullptr;
+			const UInt32 id = strtoul(idText.c_str(), &end, 16);
+			if (idText.empty() || *end != '\0') {
+				LOG_ERR("Invalid storm weather entry: %s", entry.c_str());
+				continue;
+			}
+
+			if (separator == std::string::npos) {
+				_stormWeatherLocalIds.insert(id & 0x00FFFFFF);
+				continue;
+			}
+
+			const std::string plugin = Trim(entry.substr(0, separator));
+			const auto weather = dataHandler ? dataHandler->LookupForm<TESWeather>(id, plugin) : nullptr;
+			if (!weather) {
+				LOG("Storm weather %s not found (plugin not loaded?)", entry.c_str());
+				continue;
+			}
+			_stormWeatherFormIds.insert(weather->GetFormID());
 		}
-		if (iniFileContents.find("iInsideDungeonBase") == std::string::npos) {
-			WritePrivateProfileStringA("IntermittendModeLevelConfig", "iInsideDungeonBase", std::to_string(DEFAULT_INTERMITTENT_iInsideDungeonBase).c_str(),
-				sExecPath.c_str());
-		}
-		if (iniFileContents.find("iInsideCaveBase") == std::string::npos) {
-			WritePrivateProfileStringA("IntermittendModeLevelConfig", "iInsideCaveBase", std::to_string(DEFAULT_INTERMITTENT_iInsideCaveBase).c_str(),
-				sExecPath.c_str());
-		}
-		if (iniFileContents.find("iInsideIceCaveBase") == std::string::npos) {
-			WritePrivateProfileStringA("IntermittendModeLevelConfig", "iInsideIceCaveBase", std::to_string(DEFAULT_INTERMITTENT_iInsideIceCaveBase).c_str(),
-				sExecPath.c_str());
-		}
-		if (iniFileContents.find("iOutsideBase") == std::string::npos) {
-			WritePrivateProfileStringA("IntermittendModeLevelConfig", "iOutsideBase", std::to_string(DEFAULT_INTERMITTENT_iOutsideBase).c_str(),
-				sExecPath.c_str());
-		}
-		if (iniFileContents.find("iOutsideTimeDayMod") == std::string::npos) {
-			WritePrivateProfileStringA("IntermittendModeLevelConfig", "iOutsideTimeDayMod", std::to_string(DEFAULT_INTERMITTENT_iOutsideTimeDayMod).c_str(),
-				sExecPath.c_str());
-		}
-		if (iniFileContents.find("iOutsideTimeNightMod") == std::string::npos) {
-			WritePrivateProfileStringA("IntermittendModeLevelConfig", "iOutsideTimeNightMod", std::to_string(DEFAULT_INTERMITTENT_iOutsideTimeNightMod).c_str(),
-				sExecPath.c_str());
-		}
-		if (iniFileContents.find("iOutsideWeatherPleasantMod") == std::string::npos) {
-			WritePrivateProfileStringA("IntermittendModeLevelConfig", "iOutsideWeatherPleasantMod", std::to_string(DEFAULT_INTERMITTENT_iOutsideWeatherPleasantMod).c_str(),
-				sExecPath.c_str());
-		}
-		if (iniFileContents.find("iOutsideWeatherCloudyMod") == std::string::npos) {
-			WritePrivateProfileStringA("IntermittendModeLevelConfig", "iOutsideWeatherCloudyMod", std::to_string(DEFAULT_INTERMITTENT_iOutsideWeatherCloudyMod).c_str(),
-				sExecPath.c_str());
-		}
-		if (iniFileContents.find("iOutsideWeatherRainMod") == std::string::npos) {
-			WritePrivateProfileStringA("IntermittendModeLevelConfig", "iOutsideWeatherRainMod", std::to_string(DEFAULT_INTERMITTENT_iOutsideWeatherRainMod).c_str(),
-				sExecPath.c_str());
-		}
-		if (iniFileContents.find("iOutsideWeatherSnowMod") == std::string::npos) {
-			WritePrivateProfileStringA("IntermittendModeLevelConfig", "iOutsideWeatherSnowMod", std::to_string(DEFAULT_INTERMITTENT_iOutsideWeatherSnowMod).c_str(),
-				sExecPath.c_str());
-		}
-		if (iniFileContents.find("iOutsideWeatherStormMod") == std::string::npos) {
-			WritePrivateProfileStringA("IntermittendModeLevelConfig", "iOutsideWeatherStormMod", std::to_string(DEFAULT_INTERMITTENT_iOutsideWeatherStormMod).c_str(),
-				sExecPath.c_str());
-		}
-		if (iniFileContents.find("iOutsideAltitudeHighMod") == std::string::npos) {
-			WritePrivateProfileStringA("IntermittendModeLevelConfig", "iOutsideAltitudeHighMod", std::to_string(DEFAULT_INTERMITTENT_iOutsideAltitudeHighMod).c_str(),
-				sExecPath.c_str());
-		}
-		if (iniFileContents.find("iOutsideAltitudeVeryHighMod") == std::string::npos) {
-			WritePrivateProfileStringA("IntermittendModeLevelConfig", "iOutsideAltitudeVeryHighMod", std::to_string(DEFAULT_INTERMITTENT_iOutsideAltitudeVeryHighMod).c_str(),
-				sExecPath.c_str());
-		}
-		if (iniFileContents.find("iHighAltitudeBegin") == std::string::npos) {
-			WritePrivateProfileStringA("IntermittendModeLevelConfig", "iHighAltitudeBegin", std::to_string(DEFAULT_INTERMITTENT_iHighAltitudeBegin).c_str(),
-				sExecPath.c_str());
-		}
-		if (iniFileContents.find("iVeryHighAltitudeBegin") == std::string::npos) {
-			WritePrivateProfileStringA("IntermittendModeLevelConfig", "iVeryHighAltitudeBegin", std::to_string(DEFAULT_INTERMITTENT_iVeryHighAltitudeBegin).c_str(),
-				sExecPath.c_str());
-		}
-		
-		//LOG("write settings done");
+		LOG("Storm weathers: %zu resolved, %zu without plugin", _stormWeatherFormIds.size(), _stormWeatherLocalIds.size());
 	}
 
 	void LoadSettings() {
-		std::string sExecPath = GetIniPath();
-		unsigned int bIntermittentModeEnabled = GetPrivateProfileIntA("GeneralModConfig", "bIntermittentModeEnabled", 0, sExecPath.c_str());
-		unsigned int bLoggingEnabled = GetPrivateProfileIntA("GeneralModConfig", "bLoggingEnabled", 0, sExecPath.c_str());
-		_logsEnabled = bLoggingEnabled > 0;
-		unsigned int bNoWindInMenu = GetPrivateProfileIntA("GeneralModConfig", "bNoWindInMenu", 0, sExecPath.c_str());
-		_noWindInMenu = bNoWindInMenu > 0;
+		const std::string sExecPath = GetIniPath();
+		_logsEnabled = ReadGeneralSetting("bLoggingEnabled", sExecPath) > 0;
+		_noWindInMenu = ReadGeneralSetting("bNoWindInMenu", sExecPath) > 0;
+		_intermittentModeEnabled = ReadGeneralSetting("bIntermittentModeEnabled", sExecPath) > 0;
 
-		std::vector<std::vector<float>> intermittendWindStrengthConfig;
+		_levelValues[0] = LevelValues(0, ALWAYS, 0, 0);
 
-		
-		if (bIntermittentModeEnabled > 0) {
-			char iniFileBuffer[100];
-			for (int i = 1; i < 7; i++) {
-				intermittendWindStrengthConfig.push_back(std::vector<float>());
-
-				std::string intermittendLXOn = "fIntermittentL" + std::to_string(i) + "On";
-				std::string intermittendLXOff = "fIntermittentL" + std::to_string(i) + "Off";
-				std::string intermittendLXRandomAddOn = "fIntermittentL" + std::to_string(i) + "RandomAddOn";
-				std::string intermittendLXRandomAddOff = "fIntermittentL" + std::to_string(i) + "RandomAddOff";
-
-				GetPrivateProfileStringA("IntermittendModeStrengthConfig", intermittendLXOn.c_str(), std::to_string(DEFAULTS_INTERMITTENT[i-1][0]).c_str(),
-					iniFileBuffer, 100, sExecPath.c_str());
-				std::string intermittendLXOnStr(iniFileBuffer);
-
-				intermittendWindStrengthConfig[i-1].push_back(strtof(intermittendLXOnStr.c_str(), 0));
-
-				GetPrivateProfileStringA("IntermittendModeStrengthConfig", intermittendLXOff.c_str(), std::to_string(DEFAULTS_INTERMITTENT[i - 1][1]).c_str(),
-					iniFileBuffer, 100, sExecPath.c_str());
-				std::string intermittendLXOffStr(iniFileBuffer);
-				intermittendWindStrengthConfig[i-1].push_back(strtof(intermittendLXOffStr.c_str(), 0));
-
-				GetPrivateProfileStringA("IntermittendModeStrengthConfig", intermittendLXRandomAddOn.c_str(), std::to_string(DEFAULTS_INTERMITTENT[i - 1][2]).c_str(),
-					iniFileBuffer, 100, sExecPath.c_str());
-				std::string intermittendLXRandomAddOnStr(iniFileBuffer);
-				intermittendWindStrengthConfig[i-1].push_back(strtof(intermittendLXRandomAddOnStr.c_str(), 0));
-
-				GetPrivateProfileStringA("IntermittendModeStrengthConfig", intermittendLXRandomAddOff.c_str(), std::to_string(DEFAULTS_INTERMITTENT[i - 1][3]).c_str(),
-					iniFileBuffer, 100, sExecPath.c_str());
-				std::string intermittendLXRandomAddOffStr(iniFileBuffer);
-				intermittendWindStrengthConfig[i-1].push_back(strtof(intermittendLXRandomAddOffStr.c_str(), 0));
-
+		if (!_intermittentModeEnabled) {
+			// simple mode: fan on outside, off inside
+			for (const IntSetting & setting : LEVEL_SETTINGS) {
+				*setting.value = 0;
 			}
-
-			//LOG("loaded intermittent strengths");
-
-			for (int i = 0; i < 6; i++) {
-				if (intermittendWindStrengthConfig[i][0] <= 0 && intermittendWindStrengthConfig[i][1] <= 0) {
-					intermittendWindStrengthConfig[i][0] = DEFAULTS_INTERMITTENT[i][0];
-					intermittendWindStrengthConfig[i][1] = DEFAULTS_INTERMITTENT[i][1];
-				}
-				else if (intermittendWindStrengthConfig[i][0] <= 0) {
-					intermittendWindStrengthConfig[i][1] = 999999;
-				}
-				else if (intermittendWindStrengthConfig[i][1] <= 0) {
-					intermittendWindStrengthConfig[i][0] = 999999;
-				}
-				else {
-					if (intermittendWindStrengthConfig[i][0] < 1) {
-						intermittendWindStrengthConfig[i][0] = 1;
-					}
-					if (intermittendWindStrengthConfig[i][1] < 1) {
-						intermittendWindStrengthConfig[i][1] = 1;
-					}
-				}
-			}
-
-
-			LOG("corrected intermittent strengths");
-
-			iInsideHouseBase = GetPrivateProfileIntA("IntermittendModeLevelConfig", "iInsideHouseBase", DEFAULT_INTERMITTENT_iInsideHouseBase, sExecPath.c_str());
-			iInsideDungeonBase = GetPrivateProfileIntA("IntermittendModeLevelConfig", "iInsideDungeonBase", DEFAULT_INTERMITTENT_iInsideDungeonBase, sExecPath.c_str());
-			iInsideCaveBase = GetPrivateProfileIntA("IntermittendModeLevelConfig", "iInsideCaveBase", DEFAULT_INTERMITTENT_iInsideCaveBase, sExecPath.c_str());
-			iInsideIceCaveBase = GetPrivateProfileIntA("IntermittendModeLevelConfig", "iInsideIceCaveBase", DEFAULT_INTERMITTENT_iInsideIceCaveBase, sExecPath.c_str());
-			iOutsideBase = GetPrivateProfileIntA("IntermittendModeLevelConfig", "iOutsideBase", DEFAULT_INTERMITTENT_iOutsideBase, sExecPath.c_str());
-			iOutsideTimeDayMod = GetPrivateProfileIntA("IntermittendModeLevelConfig", "iOutsideTimeDayMod", DEFAULT_INTERMITTENT_iOutsideTimeDayMod, sExecPath.c_str());
-			iOutsideTimeNightMod = GetPrivateProfileIntA("IntermittendModeLevelConfig", "iOutsideTimeNightMod", DEFAULT_INTERMITTENT_iOutsideTimeNightMod, sExecPath.c_str());
-			iOutsideWeatherPleasantMod = GetPrivateProfileIntA("IntermittendModeLevelConfig", "iOutsideWeatherPleasantMod", DEFAULT_INTERMITTENT_iOutsideWeatherPleasantMod, sExecPath.c_str());
-			iOutsideWeatherCloudyMod = GetPrivateProfileIntA("IntermittendModeLevelConfig", "iOutsideWeatherCloudyMod", DEFAULT_INTERMITTENT_iOutsideWeatherCloudyMod, sExecPath.c_str());
-			iOutsideWeatherRainMod = GetPrivateProfileIntA("IntermittendModeLevelConfig", "iOutsideWeatherRainMod", DEFAULT_INTERMITTENT_iOutsideWeatherRainMod, sExecPath.c_str());
-			iOutsideWeatherSnowMod = GetPrivateProfileIntA("IntermittendModeLevelConfig", "iOutsideWeatherSnowMod", DEFAULT_INTERMITTENT_iOutsideWeatherSnowMod, sExecPath.c_str());
-			iOutsideWeatherStormMod = GetPrivateProfileIntA("IntermittendModeLevelConfig", "iOutsideWeatherStormMod", DEFAULT_INTERMITTENT_iOutsideWeatherStormMod, sExecPath.c_str());
-			iOutsideAltitudeHighMod = GetPrivateProfileIntA("IntermittendModeLevelConfig", "iOutsideAltitudeHighMod", DEFAULT_INTERMITTENT_iOutsideAltitudeHighMod, sExecPath.c_str());
-			iOutsideAltitudeVeryHighMod = GetPrivateProfileIntA("IntermittendModeLevelConfig", "iOutsideAltitudeVeryHighMod", DEFAULT_INTERMITTENT_iOutsideAltitudeVeryHighMod, sExecPath.c_str());
-			iHighAltitudeBegin = GetPrivateProfileIntA("IntermittendModeLevelConfig", "iHighAltitudeBegin", DEFAULT_INTERMITTENT_iHighAltitudeBegin, sExecPath.c_str());
-			iVeryHighAltitudeBegin = GetPrivateProfileIntA("IntermittendModeLevelConfig", "iVeryHighAltitudeBegin", DEFAULT_INTERMITTENT_iVeryHighAltitudeBegin, sExecPath.c_str());
-
-			//LOG("loaded intermittent mode");
-			ImmersiveWinds::_levelValues[0] = ImmersiveWinds::LevelValues(0, 999999, 0, 0);
-			for (int i = 0; i < 6; i++) {
-				ImmersiveWinds::_levelValues[i+1] = ImmersiveWinds::LevelValues(intermittendWindStrengthConfig[i][0], intermittendWindStrengthConfig[i][1], intermittendWindStrengthConfig[i][2], intermittendWindStrengthConfig[i][3]);
-			}
-		}
-		else {
-
-			// set the values in a way that only 2 states will be necessary
+			iOutsideBase = 1;
 			iHighAltitudeBegin = 4000;
 			iVeryHighAltitudeBegin = 18000;
-			iInsideHouseBase = 0;
-			iInsideDungeonBase = 0;
-			iInsideCaveBase = 0;
-			iInsideIceCaveBase = 0;
-			iOutsideBase = 1;
-			iOutsideTimeDayMod = 0;
-			iOutsideTimeNightMod = 0;
-			iOutsideWeatherPleasantMod = 0;
-			iOutsideWeatherCloudyMod = 0;
-			iOutsideWeatherRainMod = 0;
-			iOutsideWeatherSnowMod = 0;
-			iOutsideWeatherStormMod = 0;
-			iOutsideAltitudeHighMod = 0;
-			iOutsideAltitudeVeryHighMod = 0;
-
-			//LOG("loaded simple mode");
-			ImmersiveWinds::_levelValues[0] = ImmersiveWinds::LevelValues(0, 999999, 0, 0);
-			ImmersiveWinds::_levelValues[1] = ImmersiveWinds::LevelValues(999999, 0, 0, 0);
-
+			_levelValues[1] = LevelValues(ALWAYS, 0, 0, 0);
+			return;
 		}
-		//LOG("load settings done");
+
+		for (int i = 0; i < MAX_LEVEL; i++) {
+			const LevelTiming & defaults = DEFAULT_LEVEL_TIMINGS[i];
+			float on = ReadIniFloat(INI_STRENGTH, StrengthKey(i + 1, "On"), defaults.on, sExecPath);
+			float off = ReadIniFloat(INI_STRENGTH, StrengthKey(i + 1, "Off"), defaults.off, sExecPath);
+			const float randomOn = ReadIniFloat(INI_STRENGTH, StrengthKey(i + 1, "RandomAddOn"), defaults.randomOn, sExecPath);
+			const float randomOff = ReadIniFloat(INI_STRENGTH, StrengthKey(i + 1, "RandomAddOff"), defaults.randomOff, sExecPath);
+
+			// 0 for on or off keeps the plug in the other state, at least one second otherwise
+			if (on <= 0 && off <= 0) {
+				on = defaults.on;
+				off = defaults.off;
+			}
+			else if (on <= 0) {
+				off = ALWAYS;
+			}
+			else if (off <= 0) {
+				on = ALWAYS;
+			}
+			else {
+				on = std::max(on, 1.0f);
+				off = std::max(off, 1.0f);
+			}
+			_levelValues[i + 1] = LevelValues(on, off, randomOn, randomOff);
+		}
+		LOG("corrected intermittent strengths");
+
+		for (const IntSetting & setting : LEVEL_SETTINGS) {
+			*setting.value = ReadIniInt(setting, sExecPath);
+		}
+		LoadStormWeathers(ReadIniString(INI_LEVELS, "sStormWeathers", DEFAULT_STORM_WEATHERS, sExecPath));
 	}
 
-	void AsyncExcecSwitchState(long state)
-	{
-		LOG("\nSetSwitchState called %ld", state);
-			
-		TPLinkHelper tpLinkConn(_logsEnabled);
-
-		// load the ip for the connection
-		LoadConnectionConfig(tpLinkConn);
-		if (state >= 1) {
-			tpLinkConn.SwitchRelayState(1);
-		}
-		else {
-			tpLinkConn.SwitchRelayState(0);
-		}
-	}
-
-	float GetWindSpeed(TESWeather* thisWeather)
-	{
-		return (thisWeather) ? (thisWeather->data.windSpeed / 256.0f) : 0.0f;
-	}
+	// ---- wind level ----
 
 	float GetSunGlare(TESWeather* thisWeather)
 	{
 		return (thisWeather) ? static_cast<float>(thisWeather->data.sunGlare) : 0.0f;
 	}
 
+	bool IsStormWeather(UInt32 weatherId)
+	{
+		return _stormWeatherFormIds.contains(weatherId) || _stormWeatherLocalIds.contains(weatherId & 0x00FFFFFF);
+	}
+
+	bool IsHouse(BGSLocation * location)
+	{
+		return std::any_of(_houseKeywords.begin(), _houseKeywords.end(), [location](BGSKeyword * keyword) { return location->HasKeyword(keyword); });
+	}
+
 	void UpdateNativeWindStateInternal()
 	{
 		int resultingLevel = 0;
 		int mod = 0;
-		if (_internalCell) 
+		if (_internalCell)
 		{
 			resultingLevel = iInsideHouseBase;
 
-			if (_currentLocation)
+			if (_currentLocation && !IsHouse(_currentLocation))
 			{
-				if (_currentLocation->HasKeyword(keywordLocTypeDwelling) // dwelling
-					|| _currentLocation->HasKeyword(keywordLocTypeFarm) // farm
-					|| _currentLocation->HasKeyword(keywordLocTypeGuild) // guild
-					|| _currentLocation->HasKeyword(keywordLocTypeInn) // inn (Gasthaus)
-					|| _currentLocation->HasKeyword(keywordLocTypeJail) // jail
-					|| _currentLocation->HasKeyword(keywordLocTypeLumberMill) // lumber mill
-					|| _currentLocation->HasKeyword(keywordLocTypeStewardsDwelling) // steward dwelling
-					|| _currentLocation->HasKeyword(keywordLocTypeStore) // store
-					|| _currentLocation->HasKeyword(keywordLocTypePlayerHouse) // player house
-					|| _currentLocation->HasKeyword(keywordLocTypeHouse) // house
-					|| _currentLocation->HasKeyword(keywordLocTypeCastle) // castle
-					) {
-					resultingLevel = iInsideHouseBase;
-				}
-				else {
-					// dungeon base is the default if house was not detected.
-					resultingLevel = iInsideDungeonBase;
+				// dungeon base is the default if house was not detected.
+				resultingLevel = iInsideDungeonBase;
 
-					//if (_currentLocation->HasKeyword(keywordLocSetNordicRuin) // nordic ruin
-					//	|| _currentLocation->HasKeyword(keywordLocSetDwarvenRuin) // dwarwen ruin
-					//	|| _currentLocation->HasKeyword(keywordLocTypeDungeon) // dungeon
-					//	|| _currentLocation->HasKeyword(keywordLocTypeDragonPriestLair) // dragon priest lair
-					//	|| _currentLocation->HasKeyword(keywordLocTypeDragonLair) // dragon lair
-					//	|| _currentLocation->HasKeyword(keywordLocTypeDraugrCrypt) // draugr crypt
-					//	|| _currentLocation->HasKeyword(keywordLocTypeFalmerHive) // falmer hive
-					//	|| _currentLocation->HasKeyword(keywordLocTypeMine) // mine
-					//	|| _currentLocation->HasKeyword(keywordLocTypeTemple) // temple
-					//	) {
-					//	if (resultingLevel < iInsideDungeonBase) {
-					//		resultingLevel = iInsideDungeonBase;
-					//	}
-					//}
-					if (_currentLocation->HasKeyword(keywordLocSetCave)) { // cave
-						if (resultingLevel < iInsideCaveBase) {
-							resultingLevel = iInsideCaveBase;
-						}
-					}
-					if (_currentLocation->HasKeyword(keywordLocSetCaveIce)) { // ice cave
-						if (resultingLevel < iInsideIceCaveBase) {
-							resultingLevel = iInsideIceCaveBase;
-						}
-					}
-
-					if (_currentLocation->HasKeyword(keywordLocSetOutdoor)) { // outside actually; shall other mods be applied as well?
-						if (resultingLevel < iOutsideBase) {
-							resultingLevel = iOutsideBase;
-						}
-					}
-					// ...
+				if (keywordLocSetCave && _currentLocation->HasKeyword(keywordLocSetCave)) {
+					resultingLevel = std::max(resultingLevel, iInsideCaveBase);
 				}
-			}			
+				if (keywordLocSetCaveIce && _currentLocation->HasKeyword(keywordLocSetCaveIce)) {
+					resultingLevel = std::max(resultingLevel, iInsideIceCaveBase);
+				}
+				if (keywordLocSetOutdoor && _currentLocation->HasKeyword(keywordLocSetOutdoor)) { // outside actually
+					resultingLevel = std::max(resultingLevel, iOutsideBase);
+				}
+			}
 		}
 		else {
 			resultingLevel = iOutsideBase;
 
-			// altitude mode
+			// altitude mod
 			if (_altitude > iVeryHighAltitudeBegin) {
 				mod += iOutsideAltitudeVeryHighMod;
 				LOG("very high altitude!");
@@ -562,103 +603,64 @@ namespace ImmersiveWinds {
 			}
 
 			// daytime mod
-			
-			if (_inGameTime > 7 && _inGameTime < 19) { // check if daytime
+			if (_inGameTime > 7 && _inGameTime < 19) {
 				mod += iOutsideTimeDayMod;
 			}
-			else { // nighttime
+			else {
 				mod += iOutsideTimeNightMod;
 			}
 
 			// weather mod
-
-			long weatherIdMasked = 0x00FFFFFF & _weatherId;
-			if (weatherIdMasked == 0x10C32F || weatherIdMasked == 0x10A241    // vanilla
-				|| weatherIdMasked == 0x10A23C || weatherIdMasked == 0x0D4886
-				|| weatherIdMasked == 0x0C8221 || weatherIdMasked == 0x0C8220
-				|| weatherIdMasked == 0x001330 || weatherIdMasked == 0x001318 // true storms
-				|| weatherIdMasked == 0x18BE6E || weatherIdMasked == 0x187DD3 // vivid weathers 
-				|| weatherIdMasked == 0x00E001 || weatherIdMasked == 0x00E002 || weatherIdMasked == 0x00E003 // Mythical Ages
-				|| weatherIdMasked == 0x12DDEE || weatherIdMasked == 0x12DDED
-				|| weatherIdMasked == 0x12DDEC || weatherIdMasked == 0x16B287)
-			{
-				// TODO add more id's for support for other mods.
-				//LOG("StormWeather detected!");
-
+			if (IsStormWeather(_weatherId)) {
 				mod += iOutsideWeatherStormMod;
 			}
-			else {
-				if (_weatherClass == 0) { // pleasant
-					mod += iOutsideWeatherPleasantMod;
-				}
-				else if (_weatherClass == 1) { // cloudy
-					if (_sunglare > 0.5) {
-						//LOG("cloudy but sunglare is over 0.5 -> good weather");
-						// still good weather? 
-						mod += iOutsideWeatherPleasantMod;
-					}
-					else {
-						mod += iOutsideWeatherCloudyMod;
-					}
-				}
-				else if (_weatherClass == 2) { // rain
-					mod += iOutsideWeatherRainMod;
-				}
-				else if (_weatherClass == 3) { // snow
-					mod += iOutsideWeatherSnowMod;
-				}
+			else if (_weatherClass == 0) { // pleasant
+				mod += iOutsideWeatherPleasantMod;
+			}
+			else if (_weatherClass == 1) { // cloudy, still good weather with a lot of sun glare
+				mod += (_sunglare > 0.5) ? iOutsideWeatherPleasantMod : iOutsideWeatherCloudyMod;
+			}
+			else if (_weatherClass == 2) { // rain
+				mod += iOutsideWeatherRainMod;
+			}
+			else if (_weatherClass == 3) { // snow
+				mod += iOutsideWeatherSnowMod;
+			}
+		}
+		int result = resultingLevel + mod;
 
-			}
+		// shout has the highest prio
+		if (_shoutLevel == 1 && result < 5) {
+			result = 5;
 		}
-		int result = resultingLevel + mod; // assign to the global strength variable
-
-		if (_shoutLevel > 0) { // shout has the highest prio
-			if (_shoutLevel == 1 && result < 5) {
-				result = 5;
-			}
-			if (_shoutLevel == 2) {
-				result = 6;
-			}
+		if (_shoutLevel == 2) {
+			result = MAX_LEVEL;
 		}
-		if (result > 6) {
-			result = 6;
-		}
+		result = std::min(result, MAX_LEVEL);
 		_currentSwitchState = result;
 
-		LOG("Resulted in: %d", result);		
+		LOG("Resulted in: %d", result);
 	}
 
-	void UpdateNativeWindState(bool bool_internalCell, float altitude, long weatherClass, BGSLocation* curLocation, float inGameTime, float sunglare, long locationId, long weatherId, float windSpeed)
+	void UpdateNativeWindState(bool internalCell, float altitude, long weatherClass, BGSLocation* curLocation, float inGameTime, float sunglare, UInt32 weatherId)
 	{
-		LOG("\nUpdateNativeWindState called %d; %g; %ld; %g; %g; %ld; %ld", (bool_internalCell ? 1 : 0), altitude, weatherClass, inGameTime, sunglare, locationId, weatherId);		
+		LOG("\nUpdateNativeWindState called %d; %g; %ld; %g; %g; %08X", (internalCell ? 1 : 0), altitude, weatherClass, inGameTime, sunglare, weatherId);
 
-		_internalCell = bool_internalCell;
+		_internalCell = internalCell;
 		_altitude = altitude;
 		_weatherClass = weatherClass;
 		_currentLocation = curLocation;
 		_inGameTime = inGameTime;
 		_sunglare = sunglare;
-		_locationId = locationId;
 		_weatherId = weatherId;
-		_windSpeed = windSpeed;
 
 		UpdateNativeWindStateInternal();
 	}
 
-
-	void TriggerShout(long level)
+	void SetShoutLevel(long level)
 	{
-		LOG("Triggered shout with level: %ld", level);
-		
+		LOG("Shout level: %ld", level);
 		_shoutLevel = level;
-		UpdateNativeWindStateInternal();
-	}
-
-	void EndShout()
-	{		
-		LOG("End shout");
-		
-		_shoutLevel = 0;
 		UpdateNativeWindStateInternal();
 	}
 
@@ -682,81 +684,32 @@ namespace ImmersiveWinds {
 		return 0;
 	}
 
-
-	void InitBgThread() {
-		LOG("InitBgThread");
-
-		// int the settings first - very important
-		WriteDefaultsToIniFile();
-		LoadSettings();
-		_generator.seed(std::random_device()());
-
-		//LOG("Load settings");
-		// start scan thread
-		std::thread t(ScanThread);
-		t.detach();
-
-		/*std::thread t3(StartConnection);
-		t3.detach();*/
-		
-
-		//LOG("Load settings");
-		// start thread for plug control (delayed)
-		std::thread t2(SwitchStateControllThread);
-		t2.detach();
-
-		// start thread that checks the game state
-		std::thread t3(WeatherCheck);
-		t3.detach();
-	}
+	// ---- game ----
 
 	bool FillFormIds()
 	{
-		keywordLocSetCave = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocSetCave);
-		keywordLocSetCaveIce = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocSetCaveIce);
-		keywordLocSetDwarvenRuin = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocSetDwarvenRuin);
-		keywordLocSetNordicRuin = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocSetNordicRuin);
-		keywordLocSetOutdoor = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocSetOutdoor);
-		keywordLocTypeDungeon = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeDungeon);
-		keywordLocTypeCity = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeCity);
-		keywordLocTypeDragonPriestLair = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeDragonPriestLair);
-		keywordLocTypeDragonLair = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeDragonLair);
-		keywordLocTypeDraugrCrypt = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeDraugrCrypt);
-		keywordLocTypeFalmerHive = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeFalmerHive);
-		keywordLocTypeMine = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeMine);
-		keywordLocTypeTemple = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeTemple);
-		keywordLocTypeDwelling = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeDwelling);
-		keywordLocTypeFarm = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeFarm);
-		keywordLocTypeGuild = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeGuild);
-		keywordLocTypeHold = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeHold);
-		keywordLocTypeHoldCapital = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeHoldCapital);
-		keywordLocTypeHoldMajor = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeHoldMajor);
-		keywordLocTypeHoldMinor = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeHoldMinor);
-		keywordLocTypeInn = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeInn);
-		keywordLocTypeJail = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeJail);
-		keywordLocTypeLumberMill = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeLumberMill);
-		keywordLocTypeShip = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeShip);
-		keywordLocTypeShipwreck = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeShipwreck);
-		keywordLocTypeStewardsDwelling = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeStewardsDwelling);
-		keywordLocTypeStore = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeStore);
-		keywordLocTypePlayerHouse = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypePlayerHouse);
-		keywordLocTypeHouse = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeHouse);
-		keywordLocTypeCastle = RE::TESForm::LookupByID<BGSKeyword>(keywordIdLocTypeCastle);
+		_houseKeywords.clear();
+		for (const UInt32 id : HOUSE_KEYWORD_IDS) {
+			if (auto keyword = RE::TESForm::LookupByID<BGSKeyword>(id)) {
+				_houseKeywords.push_back(keyword);
+			}
+		}
+		keywordLocSetCave = RE::TESForm::LookupByID<BGSKeyword>(KEYWORD_ID_LOC_SET_CAVE);
+		keywordLocSetCaveIce = RE::TESForm::LookupByID<BGSKeyword>(KEYWORD_ID_LOC_SET_CAVE_ICE);
+		keywordLocSetOutdoor = RE::TESForm::LookupByID<BGSKeyword>(KEYWORD_ID_LOC_SET_OUTDOOR);
 
 		auto dataHandler = RE::TESDataHandler::GetSingleton();
-		if (!dataHandler || !dataHandler->LookupModByName(pluginName))
+		if (!dataHandler || !dataHandler->LookupModByName(PLUGIN_NAME))
 			return false;
 
 		LOG("Plugin is loaded. Trying to find forms.");
 
 		// LookupFormID resolves the load order index (regular and light plugins)
-		ImmersiveWindsCall1FormId = dataHandler->LookupFormID(ImmersiveWindsCall1FormId, pluginName);
-		ImmersiveWindsCall2FormId = dataHandler->LookupFormID(ImmersiveWindsCall2FormId, pluginName);
-		ImmersiveWindsCallEffect1FormId = dataHandler->LookupFormID(ImmersiveWindsCallEffect1FormId, pluginName);
-		ImmersiveWindsCallEffect2FormId = dataHandler->LookupFormID(ImmersiveWindsCallEffect2FormId, pluginName);
-		ImmersiveWindsCallShout = dataHandler->LookupForm<TESShout>(ImmersiveWindsCallShoutFormId, pluginName);
-		WordRazen = dataHandler->LookupForm<TESWordOfPower>(WordRazenFormId, pluginName);
-		WordGan = dataHandler->LookupForm<TESWordOfPower>(WordGanFormId, pluginName);
+		ImmersiveWindsCallEffect1FormId = dataHandler->LookupFormID(ImmersiveWindsCallEffect1FormId, PLUGIN_NAME);
+		ImmersiveWindsCallEffect2FormId = dataHandler->LookupFormID(ImmersiveWindsCallEffect2FormId, PLUGIN_NAME);
+		ImmersiveWindsCallShout = dataHandler->LookupForm<TESShout>(ImmersiveWindsCallShoutFormId, PLUGIN_NAME);
+		WordRazen = dataHandler->LookupForm<TESWordOfPower>(WordRazenFormId, PLUGIN_NAME);
+		WordGan = dataHandler->LookupForm<TESWordOfPower>(WordGanFormId, PLUGIN_NAME);
 		return true;
 	}
 
@@ -768,11 +721,11 @@ namespace ImmersiveWinds {
 		if (flags.any(Flag::kPleasant))
 			return 0;
 		if (flags.any(Flag::kCloudy))
-			return 1; //Cloudy
+			return 1;
 		if (flags.any(Flag::kRainy))
-			return 2; //Rainy
+			return 2;
 		if (flags.any(Flag::kSnow))
-			return 3; //Snowy
+			return 3;
 
 		return -1;
 	}
@@ -785,6 +738,28 @@ namespace ImmersiveWinds {
 			return;
 		RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
 		vm->DispatchStaticCall("Game", function, RE::MakeFunctionArguments(std::move(wop)), callback);
+	}
+
+	// Gives the player the shout of ImmersiveWindsVR.esp once per game, if not known yet.
+	void TeachShoutOnce(RE::PlayerCharacter * player)
+	{
+		if (teach.exchange(true)) {
+			return;
+		}
+		if (WordRazen->GetKnown()) {
+			LOG("Player knows the word.");
+			return;
+		}
+		LOG("Player doesn't know the word.");
+		if (ImmersiveWindsCallShout)
+		{
+			player->AddShout(ImmersiveWindsCallShout);
+			CallGameFunction("TeachWord", WordRazen);
+			CallGameFunction("TeachWord", WordGan);
+			CallGameFunction("UnlockWord", WordRazen);
+			CallGameFunction("UnlockWord", WordGan);
+			LOG("Words learned and unlocked.");
+		}
 	}
 
 	// Reads the game state (player, cell, weather, shout effects) and updates the wind level.
@@ -804,7 +779,6 @@ namespace ImmersiveWinds {
 		}
 
 		const auto cell = player->GetParentCell();
-
 		if (!cell)
 		{
 			return;
@@ -812,49 +786,21 @@ namespace ImmersiveWinds {
 
 		if (WordRazen && WordGan)
 		{
-			if (!teach.load())
-			{
-				if (!WordRazen->GetKnown())
-				{
-					LOG("Player doesn't know the word.");
-					if (ImmersiveWindsCallShout)
-					{
-						player->AddShout(ImmersiveWindsCallShout);
-						CallGameFunction("TeachWord", WordRazen);
-						CallGameFunction("TeachWord", WordGan);
-						CallGameFunction("UnlockWord", WordRazen);
-						CallGameFunction("UnlockWord", WordGan);
-						LOG("Words learned and unlocked.");
-					}
-				}
-				else
-				{
-					LOG("Player knows the word.");
-				}
-				teach.store(true);
-			}
+			TeachShoutOnce(player);
 			const long shoutLevel = CheckShoutEffects();
-			if(_shoutLevel != shoutLevel)
+			if (_shoutLevel != shoutLevel)
 			{
-				if(shoutLevel > 0)
-				{
-					TriggerShout(shoutLevel);
-				}
-				else
-				{
-					EndShout();
-				}
+				SetShoutLevel(shoutLevel);
 			}
 		}
 
 		const auto worldSpace = cell->GetRuntimeData().worldSpace;
-		const bool isInterior = !worldSpace || (std::find(notExteriorWorlds.begin(), notExteriorWorlds.end(), worldSpace->GetFormID()) != notExteriorWorlds.end()); //Interior Cell
-		interiorCell.store(isInterior);
+		const bool isInterior = !worldSpace || (std::find(notExteriorWorlds.begin(), notExteriorWorlds.end(), worldSpace->GetFormID()) != notExteriorWorlds.end());
 
 		const auto skyPtr = RE::Sky::GetSingleton();
 		if (skyPtr != nullptr && skyPtr->currentWeather != nullptr)
 		{
-			UpdateNativeWindState(isInterior, player->GetPosition().z, GetClassification(skyPtr->currentWeather), player->GetCurrentLocation(), skyPtr->currentGameHour, GetSunGlare(skyPtr->currentWeather), cell->GetFormID(), skyPtr->currentWeather->GetFormID(), GetWindSpeed(skyPtr->currentWeather));
+			UpdateNativeWindState(isInterior, player->GetPosition().z, GetClassification(skyPtr->currentWeather), player->GetCurrentLocation(), skyPtr->currentGameHour, GetSunGlare(skyPtr->currentWeather), skyPtr->currentWeather->GetFormID());
 		}
 	}
 
@@ -880,12 +826,26 @@ namespace ImmersiveWinds {
 		}
 	}
 
+	void InitBgThread() {
+		LOG("InitBgThread");
+
+		// the settings first, the threads use them
+		WriteDefaultsToIniFile();
+		LoadSettings();
+		_generator.seed(std::random_device()());
+
+		std::thread(ScanThread).detach();
+		// plug control, waits for the scan
+		std::thread(SwitchStateControllThread).detach();
+		// checks the game state
+		std::thread(WeatherCheck).detach();
+	}
+
 	void ResetTeach()
 	{
 		teach.store(false);
 	}
 
-	//This function is used to initialize the mod.
 	void StartMod()
 	{
 		// ponytail: the VR build patched an unknown game function here (SafeWriteJump at VR 0x127B460+0x38D);
@@ -914,5 +874,5 @@ namespace ImmersiveWinds {
 		va_end(args);
 
 		_MESSAGE("%s", logBuffer);
-	}	
+	}
 }

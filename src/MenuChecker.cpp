@@ -1,169 +1,68 @@
 #include "MenuChecker.h"
+#include <string>
+#include <unordered_set>
 
 namespace ImmersiveWinds
 {
-	std::vector<std::string> gameStoppingMenusNoDialogue{
-		"BarterMenu",
-		"Book Menu",
-		"Console",
-		"Native UI Menu",
-		"ContainerMenu",
-		"Crafting Menu",
-		"Credits Menu",
-		"Cursor Menu",
-		"Debug Text Menu",
-		"FavoritesMenu",
-		"GiftMenu",
-		"InventoryMenu",
-		"Journal Menu",
-		"Kinect Menu",
-		"Loading Menu",
-		"Lockpicking Menu",
-		"MagicMenu",
-		"Main Menu",
-		"MapMarkerText3D",
-		"MapMenu",
-		"MessageBoxMenu",
-		"Mist Menu",
-		"Quantity Menu",
-		"RaceSex Menu",
-		"Sleep/Wait Menu",
-		"StatsMenuSkillRing",
-		"StatsMenuPerks",
-		"Training Menu",
-		"Tutorial Menu",
-		"TweenMenu"
-	};
+	namespace
+	{
+		// menus that pause the game, the dialogue menu is not included
+		const std::unordered_set<std::string> gameStoppingMenusNoDialogue{
+			"BarterMenu",
+			"Book Menu",
+			"Console",
+			"Native UI Menu",
+			"ContainerMenu",
+			"Crafting Menu",
+			"Credits Menu",
+			"Cursor Menu",
+			"Debug Text Menu",
+			"FavoritesMenu",
+			"GiftMenu",
+			"InventoryMenu",
+			"Journal Menu",
+			"Kinect Menu",
+			"Loading Menu",
+			"Lockpicking Menu",
+			"MagicMenu",
+			"Main Menu",
+			"MapMarkerText3D",
+			"MapMenu",
+			"MessageBoxMenu",
+			"Mist Menu",
+			"Quantity Menu",
+			"RaceSex Menu",
+			"Sleep/Wait Menu",
+			"StatsMenuSkillRing",
+			"StatsMenuPerks",
+			"Training Menu",
+			"Tutorial Menu",
+			"TweenMenu"
+		};
 
-	std::vector<std::string> gameStoppingMenus{
-		"BarterMenu",
-		"Book Menu",
-		"Console",
-		"Native UI Menu",
-		"ContainerMenu",
-		"Dialogue Menu",
-		"Crafting Menu",
-		"Credits Menu",
-		"Cursor Menu",
-		"Debug Text Menu",
-		"FavoritesMenu",
-		"GiftMenu",
-		"InventoryMenu",
-		"Journal Menu",
-		"Kinect Menu",
-		"Loading Menu",
-		"Lockpicking Menu",
-		"MagicMenu",
-		"Main Menu",
-		"MapMarkerText3D",
-		"MapMenu",
-		"MessageBoxMenu",
-		"Mist Menu",
-		"Quantity Menu",
-		"RaceSex Menu",
-		"Sleep/Wait Menu",
-		"StatsMenuSkillRing",
-		"StatsMenuPerks",
-		"Training Menu",
-		"Tutorial Menu",
-		"TweenMenu"
-	};
-
-	std::unordered_map<std::string, bool> menuTypes({
-		{ "BarterMenu", false },
-		{ "Book Menu", false },
-		{ "Console", false },
-		{ "Native UI Menu", false },
-		{ "ContainerMenu", false },
-		{ "Dialogue Menu", false },
-		{ "Crafting Menu", false },
-		{ "Credits Menu", false },
-		{ "Cursor Menu", false },
-		{ "Debug Text Menu", false },
-		{ "Fader Menu", false },
-		{ "FavoritesMenu", false },
-		{ "GiftMenu", false },
-		{ "HUD Menu", false },
-		{ "InventoryMenu", false },
-		{ "Journal Menu", false },
-		{ "Kinect Menu", false },
-		{ "Loading Menu", false },
-		{ "Lockpicking Menu", false },
-		{ "MagicMenu", false },
-		{ "Main Menu", false },
-		{ "MapMarkerText3D", false },
-		{ "MapMenu", false },
-		{ "MessageBoxMenu", false },
-		{ "Mist Menu", false },
-		{ "Overlay Interaction Menu", false },
-		{ "Overlay Menu", false },
-		{ "Quantity Menu", false },
-		{ "RaceSex Menu", false },
-		{ "Sleep/Wait Menu", false },
-		{ "StatsMenu", false },
-		{ "StatsMenuPerks", false },
-		{ "StatsMenuSkillRing", false },
-		{ "TitleSequence Menu", false },
-		{ "Top Menu", false },
-		{ "Training Menu", false },
-		{ "Tutorial Menu", false },
-		{ "TweenMenu", false },
-		{ "WSEnemyMeters", false },
-		{ "WSDebugOverlay", false },
-		{ "WSActivateRollover", false },
-		{ "LoadWaitSpinner", false }
-	});
+		// the game stopping menus that are open right now, only used by the event handler
+		std::unordered_set<std::string> openStoppingMenus;
+	}
 
 	std::atomic<bool> menuStopsGameNoDialogue(false);
 
-	//Menu open event functions
 	AllMenuEventHandler menuEvent;
 
-	RE::BSEventNotifyControl AllMenuEventHandler::ProcessEvent(const RE::MenuOpenCloseEvent * evn, RE::BSTEventSource<RE::MenuOpenCloseEvent> * dispatcher)
+	RE::BSEventNotifyControl AllMenuEventHandler::ProcessEvent(const RE::MenuOpenCloseEvent * evn, RE::BSTEventSource<RE::MenuOpenCloseEvent> *)
 	{
 		if (!evn)
 			return RE::BSEventNotifyControl::kContinue;
 
-		const char * menuName = evn->menuName.c_str();
-
-		if (evn->opening) //Menu opened
+		const std::string menuName = evn->menuName.c_str();
+		if (gameStoppingMenusNoDialogue.contains(menuName))
 		{
-			if (menuTypes.find(menuName) != menuTypes.end())
-			{
-				menuTypes[menuName] = true;
-			}
+			if (evn->opening)
+				openStoppingMenus.insert(menuName);
+			else
+				openStoppingMenus.erase(menuName);
+			menuStopsGameNoDialogue = !openStoppingMenus.empty();
 		}
-		else  //Menu closed
-		{
-			if (menuTypes.find(menuName) != menuTypes.end())
-			{
-				menuTypes[menuName] = false;
-			}
-		}
-
-		menuStopsGameNoDialogue = isGameStoppedNoDialogue();
 
 		return RE::BSEventNotifyControl::kContinue;
 	}
-
-	bool isGameStopped()
-	{
-		for (int i = 0; i < gameStoppingMenus.size(); i++)
-		{
-			if (menuTypes[gameStoppingMenus[i]] == true)
-				return true;
-		}
-		return false;
-	}
-
-	bool isGameStoppedNoDialogue()
-	{
-		for (int i = 0; i < gameStoppingMenusNoDialogue.size(); i++)
-		{
-			if (menuTypes[gameStoppingMenusNoDialogue[i]] == true)
-				return true;
-		}
-		return false;
-	}
 }
-
