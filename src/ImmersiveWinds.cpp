@@ -15,6 +15,8 @@ namespace ImmersiveWinds {
 	static const int WEATHER_CHECK_INTERVAL_MS = 3000;
 	// the relay state is sent again after this time, in case a (udp) message got lost or the plug restarted
 	static const float RELAY_RESEND_INTERVAL_SECONDS = 15.0f;
+	// a queued weather check that did not run after this time means the game stands still (minimized, frozen, long loading screen)
+	static const float GAME_STALLED_SECONDS = 10.0f;
 
 	static std::atomic<bool> _weatherTaskPending(false);
 	static std::atomic<bool> _scanFinished(false);
@@ -483,7 +485,7 @@ namespace ImmersiveWinds {
 
 	float GetSunGlare(TESWeather* thisWeather)
 	{
-		return (thisWeather) ? static_cast<float>(thisWeather->data.sunGlare) : 0.0f;
+		return (thisWeather) ? static_cast<float>(static_cast<std::uint8_t>(thisWeather->data.sunGlare)) : 0.0f; // CommonLib types it signed, the value is 0-255
 	}
 
 	void UpdateNativeWindStateInternal()
@@ -745,7 +747,10 @@ namespace ImmersiveWinds {
 
 		auto dataHandler = RE::TESDataHandler::GetSingleton();
 		if (!dataHandler || !dataHandler->LookupModByName(pluginName))
+		{
+			LOG_ERR("%s is not loaded, the shout is not available.", pluginName.c_str());
 			return false;
+		}
 
 		LOG("Plugin is loaded. Trying to find forms.");
 
@@ -861,6 +866,8 @@ namespace ImmersiveWinds {
 	// Background timer: queues UpdateFromGameState on the main thread every few seconds.
 	void WeatherCheck()
 	{
+		std::chrono::steady_clock::time_point taskQueued;
+
 		while (_keepRunning)
 		{
 			if (menuStopsGameNoDialogue && _noWindInMenu)
@@ -871,10 +878,17 @@ namespace ImmersiveWinds {
 			// only one check at a time, so tasks do not pile up while the game does not process them (e.g. loading screens)
 			else if (!_weatherTaskPending.exchange(true))
 			{
+				taskQueued = std::chrono::steady_clock::now();
 				SKSE::GetTaskInterface()->AddTask([]() {
 					UpdateFromGameState();
 					_weatherTaskPending = false;
 				});
+			}
+			else if (SecondsSince(taskQueued) >= GAME_STALLED_SECONDS && _currentSwitchState != 0)
+			{
+				// no fan while nobody plays; the next check after the game continues restores the level
+				LOG("Game stands still, stopping the fan.");
+				_currentSwitchState = 0;
 			}
 			Sleep(WEATHER_CHECK_INTERVAL_MS);
 		}
