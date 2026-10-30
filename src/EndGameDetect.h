@@ -1,14 +1,9 @@
 #pragma once
-#include "TPLinkSPHelper.h"
-#include "ImmersiveWinds.h"
 
+// Switches the plug off when the game exits (destructor of a static object).
 class EndGameDetect
 {
-private:
-	TPLinkHelper tpLinkConn;
-
 public:
 	EndGameDetect();
 	virtual ~EndGameDetect();
 };
-
