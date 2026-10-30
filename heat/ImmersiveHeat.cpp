@@ -72,6 +72,9 @@ namespace ImmersiveHeat {
 			float lightLevelHysteresis = 4.0f;
 			// the light level includes fire light, so next to a fire it takes this much more to count as sunlight
 			float fireLightMargin = 40.0f;
+			// day from the sunrise and sunset of the current climate (weather and season mods change them),
+			// dayStartHour and dayEndHour without a climate or with climateDayHours off
+			bool climateDayHours = true;
 			float dayStartHour = 7.2f;
 			float dayEndHour = 17.76f;
 
@@ -278,6 +281,7 @@ namespace ImmersiveHeat {
 		WriteIniIfMissing(INI_HEAT, "fMinSunGlare", std::to_string(defaults.minSunGlare), path);
 		WriteIniIfMissing(INI_HEAT, "fMinLightLevel", std::to_string(defaults.minLightLevel), path);
 		WriteIniIfMissing(INI_HEAT, "fLightLevelHysteresis", std::to_string(defaults.lightLevelHysteresis), path);
+		WriteIniIfMissing(INI_HEAT, "bClimateDayHours", "1", path);
 		WriteIniIfMissing(INI_HEAT, "fDayStartHour", std::to_string(defaults.dayStartHour), path);
 		WriteIniIfMissing(INI_HEAT, "fDayEndHour", std::to_string(defaults.dayEndHour), path);
 		WriteIniIfMissing(INI_HEAT, "bNearFire", "1", path);
@@ -329,6 +333,7 @@ namespace ImmersiveHeat {
 		s.minSunGlare = ReadIniFloat(INI_HEAT, "fMinSunGlare", defaults.minSunGlare, path);
 		s.minLightLevel = ReadIniFloat(INI_HEAT, "fMinLightLevel", defaults.minLightLevel, path);
 		s.lightLevelHysteresis = std::max(0.0f, ReadIniFloat(INI_HEAT, "fLightLevelHysteresis", defaults.lightLevelHysteresis, path));
+		s.climateDayHours = ReadIniBool(INI_HEAT, "bClimateDayHours", defaults.climateDayHours, path);
 		s.dayStartHour = ReadIniFloat(INI_HEAT, "fDayStartHour", defaults.dayStartHour, path);
 		s.dayEndHour = ReadIniFloat(INI_HEAT, "fDayEndHour", defaults.dayEndHour, path);
 		s.nearFire = ReadIniBool(INI_HEAT, "bNearFire", defaults.nearFire, path) && s.fireSwitch != 0;
@@ -583,6 +588,47 @@ namespace ImmersiveHeat {
 		return false;
 	}
 
+	// 0-1, CommonLib types sunGlare signed, the value is 0-255
+	float GetSunGlare(const RE::TESWeather * weather)
+	{
+		return static_cast<std::uint8_t>(weather->data.sunGlare) / 255.0f;
+	}
+
+	// Sun glare of the sky, blended during a weather transition (weather mods often use long transitions).
+	float GetSkySunGlare(RE::Sky * sky)
+	{
+		const float sunGlare = GetSunGlare(sky->currentWeather);
+		const float share = std::clamp(sky->currentWeatherPct, 0.0f, 1.0f);
+		if (!sky->lastWeather || share >= 1.0f) {
+			return sunGlare;
+		}
+		return GetSunGlare(sky->lastWeather) * (1.0f - share) + sunGlare * share;
+	}
+
+	// The hours of full daylight: from the end of the sunrise to the begin of the sunset of the current climate,
+	// so weather and season mods with their own sunrise and sunset times are followed.
+	void GetDayHours(RE::Sky * sky, float & start, float & end)
+	{
+		start = _settings.dayStartHour;
+		end = _settings.dayEndHour;
+		if (!_settings.climateDayHours || !sky->currentClimate) {
+			return;
+		}
+		const auto & timing = sky->currentClimate->timing;
+		const float sunUp = timing.sunrise.end / 6.0f; // the climate counts in steps of 10 minutes
+		const float sunDown = timing.sunset.begin / 6.0f;
+		if (sunUp < sunDown) {
+			start = sunUp;
+			end = sunDown;
+		}
+
+		static RE::TESClimate * loggedClimate = nullptr;
+		if (loggedClimate != sky->currentClimate) {
+			loggedClimate = sky->currentClimate;
+			Log("Climate %08X: day from %.2f to %.2f", loggedClimate->GetFormID(), start, end);
+		}
+	}
+
 	bool IsInSunlight(RE::PlayerCharacter * player, bool nearFire)
 	{
 		auto sky = RE::Sky::GetSingleton();
@@ -598,8 +644,10 @@ namespace ImmersiveHeat {
 		}
 
 		const float hour = sky->currentGameHour;
-		// CommonLib types sunGlare signed, the value is 0-255
-		const float sunGlare = static_cast<std::uint8_t>(sky->currentWeather->data.sunGlare) / 256.0f;
+		const float sunGlare = GetSkySunGlare(sky);
+		float dayStart = 0.0f;
+		float dayEnd = 0.0f;
+		GetDayHours(sky, dayStart, dayEnd);
 		auto high = player->GetHighProcess();
 		const float lightLevel = high ? high->lightLevel : 0.0f;
 
@@ -607,7 +655,7 @@ namespace ImmersiveHeat {
 		const float minLightLevel = _settings.minLightLevel + (nearFire ? _settings.fireLightMargin : 0.0f) - (_inSunlight ? _settings.lightLevelHysteresis : 0.0f);
 		_lightLevel = lightLevel;
 
-		return hour > _settings.dayStartHour && hour < _settings.dayEndHour
+		return hour > dayStart && hour < dayEnd
 			&& sunGlare > _settings.minSunGlare
 			&& (_settings.minLightLevel <= 0 || lightLevel > minLightLevel);
 	}

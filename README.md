@@ -80,13 +80,19 @@ The level is the base value of the place plus the modifiers, at most 6. The shou
 | `iOutsideBase` | `3` | exterior |
 | `iOutsideTimeDayMod` / `iOutsideTimeNightMod` | `0` / `1` | day is 7:00 to 19:00 |
 | `iOutsideWeatherPleasantMod` | `0` | |
-| `iOutsideWeatherCloudyMod` | `1` | |
+| `iOutsideWeatherCloudyMod` | `1` | cloudy weathers with a sun glare up to 0.5, brighter cloudy weathers count as pleasant |
 | `iOutsideWeatherRainMod` | `1` | |
 | `iOutsideWeatherSnowMod` | `2` | |
-| `iOutsideWeatherStormMod` | `3` | weathers in `sStormWeathers` |
+| `iOutsideWeatherStormMod` | `3` | storm weathers, see below |
 | `iOutsideAltitudeHighMod` / `iOutsideAltitudeVeryHighMod` | `1` / `2` | above `iHighAltitudeBegin` / `iVeryHighAltitudeBegin` |
 | `iHighAltitudeBegin` / `iVeryHighAltitudeBegin` | `4000` / `18000` | height in game units |
-| `sStormWeathers` | vanilla storms, True Storms, Vivid Weathers, Mythical Ages | see below |
+| `bAutoStormWeathers` | `1` | rain and snow weathers with a wind speed of at least `fStormMinWindSpeed` count as storm |
+| `fStormMinWindSpeed` | `0.5` | wind speed of the weather, 0-1 |
+| `sStormWeathers` | vanilla storms, True Storms, Vivid Weathers, Mythical Ages | weathers that are always storm, see below |
+
+**Weather mods** (Cathedral, Obsidian, Azurite, NAT, Vivid, Dolomite, True Storms, ...) bring their own weathers. The plugin reads the weather itself, not its id: its type (pleasant, cloudy, rain, snow), sun glare and wind speed. So their weathers work without a list, and `bAutoStormWeathers` recognizes their storms by rain or snow plus strong wind. The simulated wind follows the wind speed of any weather anyway. During a weather transition the previous weather counts until the transition is half done, so the fan does not start the storm while the sky is still clear. With `bLoggingEnabled=1` the log shows the id of every weather, its type, and `(storm)` for storms; a weather the automatic detection misses can be added to `sStormWeathers`, one that it should not count can be excluded by raising `fStormMinWindSpeed`.
+
+Wind mods that only change the animation of grass and trees (INI wind settings, SMP wind) do not change the weathers and need nothing.
 
 `sStormWeathers` is a comma separated list of weathers that count as storm:
 
@@ -146,7 +152,7 @@ Set `sSwitchType=http` and the two urls. Any answer with status 2xx counts as su
 
 A second, independent SKSE plugin, `ImmersiveHeat.dll`, switches one or two more smart plugs, e.g. with an infrared heat lamp, while the player is near a heat source. It has two heat sources:
 
-- **Sunlight**: outside (or in an interior marked as outdoor), between `fDayStartHour` and `fDayEndHour`, with a sun glare of the weather above `fMinSunGlare` and the light level at the player above `fMinLightLevel`.
+- **Sunlight**: outside (or in an interior marked as outdoor), at day, with a sun glare of the weather above `fMinSunGlare` and the light level at the player above `fMinLightLevel`. Day is from the end of the sunrise to the begin of the sunset of the current climate (`bClimateDayHours`), so weather and season mods with their own times are followed; without a climate, or with `bClimateDayHours=0`, it is `fDayStartHour` to `fDayEndHour`. During a weather transition the sun glare is blended between both weathers.
 - **Fire**:
   - hit by fire (fire spells, dragon breath, fire enchanted weapons) or any fire damage effect applied to the player (traps, hazards, cloak spells) switches on right away, from the game event, and keeps it on for at least `fFireHitSeconds`; it stays on while fire damage effects are active on the player (`bFireHits`)
   - while the player charges a fire spell; casting one switches on right away (`bOwnFireSpells`)
@@ -176,10 +182,13 @@ Upgrading from the test builds of *Immersive Sun*: delete `ImmersiveSunPluginScr
 | | `sFireModels` | `fire,flame,brazier,forge,smelter,lava,embers,hearth` |
 | | `sFireModelsExclude` | unlit fires and things that only sound like fire, see the ini. Inventory items never count. |
 | | `bSunlight`, `fMinSunGlare`, `fMinLightLevel` | `1`, `0.4` (0-1), `180` (`0` disables the light check) |
-| | `fDayStartHour`, `fDayEndHour` | `7.2`, `17.76` |
+| | `bClimateDayHours` | `1`: day hours of the current climate, the log shows them when the climate changes |
+| | `fDayStartHour`, `fDayEndHour` | `7.2`, `17.76` (used with `bClimateDayHours=0` or without a climate) |
 | | `fFireLightMargin` | `40`: the light level includes fire light, so within the fire radius it has to be this much higher to count as sunlight |
 | | `fLightLevelHysteresis` | `4`: in the sun, the light level has to drop this much below `fMinLightLevel` to count as shadow, so the plug does not flicker at the edge of a shadow |
 | | `fCheckIntervalSeconds` | `0.1`: time between two checks (the search for fire nearby runs once per second) |
+
+**Weather and lighting mods**: weathers of any mod work, the plugin reads sun glare and day hours from the weather and the climate. The light level at the player is computed by the game from the weather's sunlight and ambient colors, so weather and lighting mods that make the day darker or brighter (and ENB/Community Shaders not at all, they only change the picture) can need another `fMinLightLevel`: with `bLoggingEnabled=1` the log shows the light level, stand in the sun and in a shadow and set the value between both.
 
 ## Building
 

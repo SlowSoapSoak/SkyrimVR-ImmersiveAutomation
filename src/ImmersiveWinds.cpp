@@ -95,6 +95,7 @@ namespace ImmersiveWinds {
 		int iOutsideWeatherStormMod = 0;
 		int iOutsideAltitudeHighMod = 0;
 		int iOutsideAltitudeVeryHighMod = 0;
+		int bAutoStormWeathers = 0;
 
 		struct IntSetting
 		{
@@ -167,7 +168,12 @@ namespace ImmersiveWinds {
 			{ INI_LEVELS, "iOutsideAltitudeVeryHighMod", 2, &iOutsideAltitudeVeryHighMod },
 			{ INI_LEVELS, "iHighAltitudeBegin", 4000, &iHighAltitudeBegin },
 			{ INI_LEVELS, "iVeryHighAltitudeBegin", 18000, &iVeryHighAltitudeBegin },
+			{ INI_LEVELS, "bAutoStormWeathers", 1, &bAutoStormWeathers },
 		};
+
+		// rain and snow weathers with at least this wind speed (0-1) count as storm, see IsStormWeather
+		const float DEFAULT_STORM_MIN_WIND_SPEED = 0.5f;
+		float _stormMinWindSpeed = DEFAULT_STORM_MIN_WIND_SPEED;
 
 		// timing of the levels 1-6 in seconds: on, off, random time added to on, random time added to off
 		struct LevelTiming
@@ -259,6 +265,7 @@ namespace ImmersiveWinds {
 		float _inGameTime = 0;
 		float _sunglare = 0;
 		UInt32 _weatherId = 0;
+		bool _isStorm = false;
 		float _gameWindSpeed = 0;
 
 		// last player position for the motion wind (main thread)
@@ -539,6 +546,7 @@ namespace ImmersiveWinds {
 			WriteIniIfMissing(setting.section, setting.key, std::to_string(setting.defaultValue), sExecPath);
 		}
 		WriteIniIfMissing(INI_LEVELS, "sStormWeathers", DEFAULT_STORM_WEATHERS, sExecPath);
+		WriteIniIfMissing(INI_LEVELS, "fStormMinWindSpeed", std::to_string(DEFAULT_STORM_MIN_WIND_SPEED), sExecPath);
 
 		for (const FloatSetting & setting : SIM_SETTINGS) {
 			WriteIniIfMissing(INI_SIM, setting.key, std::to_string(setting.defaultValue), sExecPath);
@@ -677,18 +685,35 @@ namespace ImmersiveWinds {
 			*setting.value = ReadIniInt(setting, sExecPath);
 		}
 		LoadStormWeathers(ReadIniString(INI_LEVELS, "sStormWeathers", DEFAULT_STORM_WEATHERS, sExecPath));
+		_stormMinWindSpeed = ReadIniFloat(INI_LEVELS, "fStormMinWindSpeed", DEFAULT_STORM_MIN_WIND_SPEED, sExecPath);
 	}
 
 	// ---- wind level ----
 
+	// 0-1
 	float GetSunGlare(TESWeather* thisWeather)
 	{
-		return (thisWeather) ? static_cast<float>(static_cast<std::uint8_t>(thisWeather->data.sunGlare)) : 0.0f; // CommonLib types it signed, the value is 0-255
+		return (thisWeather) ? static_cast<std::uint8_t>(thisWeather->data.sunGlare) / 255.0f : 0.0f; // CommonLib types it signed, the value is 0-255
 	}
 
-	bool IsStormWeather(UInt32 weatherId)
+	// The weather the sky mostly shows: during a transition the previous weather until it is half done. Weather
+	// mods often use long transitions, the storm should not start while the sky is still clear.
+	TESWeather * GetVisibleWeather(RE::Sky * sky)
 	{
-		return _stormWeatherFormIds.contains(weatherId) || _stormWeatherLocalIds.contains(weatherId & 0x00FFFFFF);
+		return (sky->lastWeather && sky->currentWeatherPct < 0.5f) ? sky->lastWeather : sky->currentWeather;
+	}
+
+	// The weathers of sStormWeathers, and with bAutoStormWeathers every rain or snow weather with strong wind.
+	// The latter works for weathers of any mod without knowing their ids.
+	bool IsStormWeather(TESWeather * weather)
+	{
+		const UInt32 weatherId = weather->GetFormID();
+		if (_stormWeatherFormIds.contains(weatherId) || _stormWeatherLocalIds.contains(weatherId & 0x00FFFFFF)) {
+			return true;
+		}
+		using Flag = TESWeather::WeatherDataFlag;
+		const float windSpeed = weather->data.windSpeed / 255.0f;
+		return bAutoStormWeathers && weather->data.flags.any(Flag::kRainy, Flag::kSnow) && windSpeed >= _stormMinWindSpeed;
 	}
 
 	bool IsHouse(BGSLocation * location)
@@ -744,7 +769,7 @@ namespace ImmersiveWinds {
 			}
 
 			// weather mod
-			if (IsStormWeather(_weatherId)) {
+			if (_isStorm) {
 				mod += iOutsideWeatherStormMod;
 			}
 			else if (_weatherClass == 0) { // pleasant
@@ -791,9 +816,9 @@ namespace ImmersiveWinds {
 		}
 	}
 
-	void UpdateNativeWindState(bool internalCell, float altitude, long weatherClass, BGSLocation* curLocation, float inGameTime, float sunglare, UInt32 weatherId)
+	void UpdateNativeWindState(bool internalCell, float altitude, long weatherClass, BGSLocation* curLocation, float inGameTime, float sunglare, UInt32 weatherId, bool isStorm)
 	{
-		LOG("\nUpdateNativeWindState called %d; %g; %ld; %g; %g; %08X", (internalCell ? 1 : 0), altitude, weatherClass, inGameTime, sunglare, weatherId);
+		LOG("\nUpdateNativeWindState called %d; %g; %ld; %g; %g; %08X%s", (internalCell ? 1 : 0), altitude, weatherClass, inGameTime, sunglare, weatherId, isStorm ? " (storm)" : "");
 
 		_internalCell = internalCell;
 		_altitude = altitude;
@@ -802,6 +827,7 @@ namespace ImmersiveWinds {
 		_inGameTime = inGameTime;
 		_sunglare = sunglare;
 		_weatherId = weatherId;
+		_isStorm = isStorm;
 
 		UpdateNativeWindStateInternal();
 	}
@@ -948,7 +974,8 @@ namespace ImmersiveWinds {
 		{
 			// 0-1 (the weather records store 0-255, in case a game version keeps that scale)
 			_gameWindSpeed = skyPtr->windSpeed > 1.0f ? skyPtr->windSpeed / 255.0f : skyPtr->windSpeed;
-			UpdateNativeWindState(isInterior, player->GetPosition().z, GetClassification(skyPtr->currentWeather), player->GetCurrentLocation(), skyPtr->currentGameHour, GetSunGlare(skyPtr->currentWeather), skyPtr->currentWeather->GetFormID());
+			const auto weather = GetVisibleWeather(skyPtr);
+			UpdateNativeWindState(isInterior, player->GetPosition().z, GetClassification(weather), player->GetCurrentLocation(), skyPtr->currentGameHour, GetSunGlare(weather), weather->GetFormID(), IsStormWeather(weather));
 		}
 	}
 
