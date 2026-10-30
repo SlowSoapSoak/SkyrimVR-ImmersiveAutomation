@@ -2,11 +2,13 @@
 #include "HttpSwitch.h"
 #include "PlugFinder.h"
 #include "EndGameDetect.h"
+#include "WindSimulation.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <random>
@@ -32,6 +34,13 @@ namespace ImmersiveWinds {
 		using RE::TESWordOfPower;
 
 		const float WEATHER_CHECK_INTERVAL_SECONDS = 3.0f;
+		// simulated wind: the player's movement is read this often, the rest of the game state every WEATHER_CHECK_INTERVAL_SECONDS
+		const float MOTION_CHECK_INTERVAL_SECONDS = 0.25f;
+		const int SIMULATION_STEP_MS = 50;
+		// simulated wind of the first shout level (the second one is full wind)
+		const float SHOUT_WIND = 0.85f;
+		// faster position changes are teleports (doors, fast travel), not movement (units per second)
+		const float MAX_MOVEMENT_SPEED = 4000.0f;
 		const int FOCUS_CHECK_INTERVAL_MS = 250;
 		// the relay state is sent again after this time, in case a (udp) message got lost or the plug restarted
 		const float RELAY_RESEND_INTERVAL_SECONDS = 15.0f;
@@ -51,12 +60,16 @@ namespace ImmersiveWinds {
 		const char * INI_STRENGTH = "IntermittendModeStrengthConfig";
 		const char * INI_LEVELS = "IntermittendModeLevelConfig";
 		const char * INI_HTTP = "HttpSwitch";
+		const char * INI_SIM = "SimulatedWind";
 
 		// ---- settings ----
 
 		bool _logsEnabled = false;
 		bool _noWindInMenu = false;
 		bool _intermittentModeEnabled = true;
+		// iWindMode 1: simulated wind (WindSimulation) instead of the levels
+		bool _simulatedWind = false;
+		bool _writeSimCsv = false;
 
 		// sSwitchType: "tplink" (TP-Link Kasa plug, found by a network scan) or "http" (sOnUrl / sOffUrl)
 		bool _useHttpSwitch = false;
@@ -97,6 +110,44 @@ namespace ImmersiveWinds {
 			{ INI_GENERAL, "bIntermittentModeEnabled", 1, nullptr },
 			{ INI_GENERAL, "bLoggingEnabled", 0, nullptr },
 			{ INI_GENERAL, "bNoWindInMenu", 0, nullptr },
+			{ INI_GENERAL, "iWindMode", 0, nullptr },
+			{ INI_SIM, "bWriteCsv", 0, nullptr },
+		};
+
+		// simulated wind settings, set by LoadSettings
+		WindSimSettings _simSettings;
+		float _gameWindScale = 1.0f;
+		float _outsideMinWind = 0.1f;
+		float _motionStartSpeed = 150.0f;
+		float _motionFullSpeed = 1000.0f;
+		float _motionWindMax = 0.6f;
+
+		struct FloatSetting
+		{
+			const char * key;
+			float defaultValue;
+			float * value;
+		};
+
+		// [SimulatedWind], defaults as in WindSimSettings
+		const FloatSetting SIM_SETTINGS[] = {
+			{ "fGameWindScale", 1.0f, &_gameWindScale },
+			{ "fOutsideMinWind", 0.1f, &_outsideMinWind },
+			{ "fTurbulence", 0.25f, &_simSettings.turbulence },
+			{ "fTurbulenceSeconds", 4.0f, &_simSettings.turbulenceSeconds },
+			{ "fGustsPerMinute", 3.0f, &_simSettings.gustsPerMinute },
+			{ "fGustMinSeconds", 3.0f, &_simSettings.gustMinSeconds },
+			{ "fGustMaxSeconds", 8.0f, &_simSettings.gustMaxSeconds },
+			{ "fGustStrength", 0.6f, &_simSettings.gustStrength },
+			{ "fLullShare", 0.25f, &_simSettings.lullShare },
+			{ "fMotionStartSpeed", 150.0f, &_motionStartSpeed },
+			{ "fMotionFullSpeed", 1000.0f, &_motionFullSpeed },
+			{ "fMotionWindMax", 0.6f, &_motionWindMax },
+			{ "fFanSpinUpSeconds", 1.5f, &_simSettings.fanSpinUpSeconds },
+			{ "fFanSpinDownSeconds", 4.0f, &_simSettings.fanSpinDownSeconds },
+			{ "fHysteresis", 0.05f, &_simSettings.hysteresis },
+			{ "fMinOnSeconds", 1.0f, &_simSettings.minOnSeconds },
+			{ "fMinOffSeconds", 1.0f, &_simSettings.minOffSeconds },
 		};
 
 		const IntSetting LEVEL_SETTINGS[] = {
@@ -186,6 +237,14 @@ namespace ImmersiveWinds {
 
 		std::atomic<bool> _scanFinished(false);
 		std::atomic<bool> _weatherTaskPending(false);
+		// the next queued check reads the whole game state, not only the player's movement
+		std::atomic<bool> _fullCheckWanted(false);
+
+		// no wind until the next game state check: menu, game in the background or standing still
+		std::atomic<bool> _windPaused(false);
+		// simulated wind 0-1, written by the game state check, read by the simulation thread
+		std::atomic<float> _simBaseWind(0.0f);
+		std::atomic<float> _motionWind(0.0f);
 
 		// ---- game state (main thread) ----
 
@@ -200,6 +259,12 @@ namespace ImmersiveWinds {
 		float _inGameTime = 0;
 		float _sunglare = 0;
 		UInt32 _weatherId = 0;
+		float _gameWindSpeed = 0;
+
+		// last player position for the motion wind (main thread)
+		RE::NiPoint3 _lastPosition;
+		RE::TESObjectCELL * _lastCell = nullptr;
+		std::chrono::steady_clock::time_point _lastPositionTime;
 
 		// worldspaces that are treated as interior (vanilla, e.g. Blackreach and Sovngarde)
 		const std::vector<UInt32> notExteriorWorlds = { 0x69857, 0x1EE62, 0x20DCB, 0x1FAE2, 0x34240, 0x50015, 0x2C965, 0x29AB7, 0x4F838, 0x3A9D6, 0x243DE, 0xC97EB, 0xC350D, 0x1CDD3, 0x1CDD9, 0x21EDB, 0x1E49D, 0x2B101, 0x2A9D8, 0x20BFE };
@@ -393,6 +458,55 @@ namespace ImmersiveWinds {
 		LOG_ERR("Exiting");
 	}
 
+	// Switches the plug so the fan follows the simulated wind (iWindMode 1).
+	void SimulatedWindThread()
+	{
+		while (!_scanFinished && _keepRunning) {
+			Sleep(100);
+		}
+
+		WindSimulation simulation(_simSettings, std::random_device()());
+		std::ofstream csv;
+		if (_writeSimCsv) {
+			const auto dir = SKSE::log::log_directory();
+			csv.open(dir ? (*dir / "ImmersiveWindsSim.csv").string() : "ImmersiveWindsSim.csv");
+			csv << "seconds,base,motion,target,fan,relay\n";
+		}
+
+		const auto start = std::chrono::steady_clock::now();
+		auto lastStep = start;
+		bool relayOn = false;
+		SendRelayState(0);
+
+		while (_keepRunning)
+		{
+			const auto now = std::chrono::steady_clock::now();
+			const float dt = std::chrono::duration<float>(now - lastStep).count();
+			lastStep = now;
+
+			const bool paused = _windPaused;
+			const float base = paused ? 0.0f : _simBaseWind.load();
+			const float motion = paused ? 0.0f : _motionWind.load();
+			const bool on = simulation.Update(dt, base, motion);
+
+			if (on != relayOn) {
+				relayOn = on;
+				SendRelayState(on ? 1 : 0);
+			}
+			else if (SecondsSince(_lastRelaySend) >= RELAY_RESEND_INTERVAL_SECONDS) {
+				SendRelayState(on ? 1 : 0);
+			}
+
+			if (csv.is_open()) {
+				char line[128];
+				snprintf(line, sizeof(line), "%.2f,%.3f,%.3f,%.3f,%.3f,%d\n", SecondsSince(start), base, motion, simulation.Target(), simulation.FanSpeed(), relayOn ? 1 : 0);
+				csv << line << std::flush;
+			}
+			Sleep(SIMULATION_STEP_MS);
+		}
+		LOG_ERR("Exiting");
+	}
+
 	// ---- settings ----
 
 	// Adds every missing setting with its default value, existing values are kept.
@@ -425,6 +539,10 @@ namespace ImmersiveWinds {
 			WriteIniIfMissing(setting.section, setting.key, std::to_string(setting.defaultValue), sExecPath);
 		}
 		WriteIniIfMissing(INI_LEVELS, "sStormWeathers", DEFAULT_STORM_WEATHERS, sExecPath);
+
+		for (const FloatSetting & setting : SIM_SETTINGS) {
+			WriteIniIfMissing(INI_SIM, setting.key, std::to_string(setting.defaultValue), sExecPath);
+		}
 	}
 
 	int ReadIniInt(const IntSetting & setting, const std::string & path)
@@ -493,6 +611,15 @@ namespace ImmersiveWinds {
 		_logsEnabled = ReadGeneralSetting("bLoggingEnabled", sExecPath) > 0;
 		_noWindInMenu = ReadGeneralSetting("bNoWindInMenu", sExecPath) > 0;
 		_intermittentModeEnabled = ReadGeneralSetting("bIntermittentModeEnabled", sExecPath) > 0;
+		_simulatedWind = ReadGeneralSetting("iWindMode", sExecPath) == 1;
+		_writeSimCsv = ReadGeneralSetting("bWriteCsv", sExecPath) > 0;
+		for (const FloatSetting & setting : SIM_SETTINGS) {
+			*setting.value = std::max(0.0f, ReadIniFloat(INI_SIM, setting.key, setting.defaultValue, sExecPath));
+		}
+		_motionFullSpeed = std::max(_motionFullSpeed, _motionStartSpeed + 1.0f);
+		if (_simulatedWind) {
+			LOG_ERR("Using the simulated wind");
+		}
 
 		_useHttpSwitch = _stricmp(Trim(ReadIniString(INI_GENERAL, "sSwitchType", "tplink", sExecPath)).c_str(), "http") == 0;
 		_plugName = Trim(ReadIniString(INI_GENERAL, "sPlugName", DEFAULT_PLUG_NAME, sExecPath));
@@ -508,7 +635,7 @@ namespace ImmersiveWinds {
 
 		_levelValues[0] = LevelValues(0, ALWAYS, 0, 0);
 
-		if (!_intermittentModeEnabled) {
+		if (!_intermittentModeEnabled && !_simulatedWind) {
 			// simple mode: fan on outside, off inside
 			for (const IntSetting & setting : LEVEL_SETTINGS) {
 				*setting.value = 0;
@@ -573,6 +700,7 @@ namespace ImmersiveWinds {
 	{
 		int resultingLevel = 0;
 		int mod = 0;
+		int altitudeMod = 0;
 		if (_internalCell)
 		{
 			resultingLevel = iInsideHouseBase;
@@ -598,13 +726,14 @@ namespace ImmersiveWinds {
 
 			// altitude mod
 			if (_altitude > iVeryHighAltitudeBegin) {
-				mod += iOutsideAltitudeVeryHighMod;
+				altitudeMod = iOutsideAltitudeVeryHighMod;
 				LOG("very high altitude!");
 			}
 			else if (_altitude > iHighAltitudeBegin) {
-				mod += iOutsideAltitudeHighMod;
+				altitudeMod = iOutsideAltitudeHighMod;
 				LOG("high altitude!");
 			}
+			mod += altitudeMod;
 
 			// daytime mod
 			if (_inGameTime > 7 && _inGameTime < 19) {
@@ -642,8 +771,24 @@ namespace ImmersiveWinds {
 		}
 		result = std::min(result, MAX_LEVEL);
 		_currentSwitchState = result;
+		_windPaused = false;
 
 		LOG("Resulted in: %d", result);
+
+		if (_simulatedWind) {
+			// inside the level of the location, outside the wind of the weather in the game
+			float wind = _internalCell
+				? static_cast<float>(resultingLevel) / MAX_LEVEL
+				: _outsideMinWind + _gameWindScale * _gameWindSpeed + static_cast<float>(altitudeMod) / MAX_LEVEL;
+			if (_shoutLevel == 1) {
+				wind = std::max(wind, SHOUT_WIND);
+			}
+			if (_shoutLevel == 2) {
+				wind = 1.0f;
+			}
+			_simBaseWind = std::clamp(wind, 0.0f, 1.0f);
+			LOG("Simulated base wind: %.2f (wind in the game %.2f)", _simBaseWind.load(), _gameWindSpeed);
+		}
 	}
 
 	void UpdateNativeWindState(bool internalCell, float altitude, long weatherClass, BGSLocation* curLocation, float inGameTime, float sunglare, UInt32 weatherId)
@@ -779,12 +924,6 @@ namespace ImmersiveWinds {
 			return;
 		}
 
-		if (menuStopsGameNoDialogue && _noWindInMenu)
-		{
-			_currentSwitchState = 0; //No fan in menu.
-			return;
-		}
-
 		const auto cell = player->GetParentCell();
 		if (!cell)
 		{
@@ -807,16 +946,84 @@ namespace ImmersiveWinds {
 		const auto skyPtr = RE::Sky::GetSingleton();
 		if (skyPtr != nullptr && skyPtr->currentWeather != nullptr)
 		{
+			// 0-1 (the weather records store 0-255, in case a game version keeps that scale)
+			_gameWindSpeed = skyPtr->windSpeed > 1.0f ? skyPtr->windSpeed / 255.0f : skyPtr->windSpeed;
 			UpdateNativeWindState(isInterior, player->GetPosition().z, GetClassification(skyPtr->currentWeather), player->GetCurrentLocation(), skyPtr->currentGameHour, GetSunGlare(skyPtr->currentWeather), skyPtr->currentWeather->GetFormID());
+		}
+	}
+
+	// no wind until the next game state check, see _windPaused
+	void PauseWind()
+	{
+		_currentSwitchState = 0;
+		_windPaused = true;
+	}
+
+	// Simulated wind: the wind of the player's own movement (running, riding, falling), from the change of the position.
+	void UpdateMotion()
+	{
+		auto player = RE::PlayerCharacter::GetSingleton();
+		if (!player || !player->Is3DLoaded())
+		{
+			return;
+		}
+
+		const auto now = std::chrono::steady_clock::now();
+		const float seconds = SecondsSince(_lastPositionTime);
+		const RE::NiPoint3 position = player->GetPosition();
+		const auto cell = player->GetParentCell();
+
+		// an interior cell change is a door; after a long pause (menu, loading) the old position says nothing
+		const bool samePlace = cell == _lastCell || (cell && _lastCell && cell->IsExteriorCell() && _lastCell->IsExteriorCell());
+		if (samePlace && seconds > 0.0f && seconds < 1.0f)
+		{
+			const float speed = position.GetDistance(_lastPosition) / seconds;
+			if (speed < MAX_MOVEMENT_SPEED)
+			{
+				const float share = std::clamp((speed - _motionStartSpeed) / (_motionFullSpeed - _motionStartSpeed), 0.0f, 1.0f);
+				_motionWind = share * _motionWindMax;
+			}
+		}
+		else
+		{
+			_motionWind = 0.0f;
+		}
+		_lastPosition = position;
+		_lastCell = cell;
+		_lastPositionTime = now;
+	}
+
+	// The queued check on the main thread.
+	void RunGameStateCheck()
+	{
+		const bool full = _fullCheckWanted.exchange(false);
+		if (menuStopsGameNoDialogue && _noWindInMenu)
+		{
+			PauseWind(); //No fan in menu.
+			return;
+		}
+		// after a pause the whole state is read again, it restores the level
+		if (full || _windPaused)
+		{
+			UpdateFromGameState();
+		}
+		if (_simulatedWind)
+		{
+			UpdateMotion();
 		}
 	}
 
 	// time the pending game state check was queued (steady_clock ticks), written by the timer and the menu events
 	std::atomic<std::chrono::steady_clock::rep> _checkQueuedAt(0);
 
-	// Queues UpdateFromGameState on the main thread. Returns false if a check is already queued.
-	bool RequestGameStateCheck()
+	// Queues RunGameStateCheck on the main thread. full: reads the whole game state, otherwise only the movement
+	// (simulated wind). Returns false if a check is already queued.
+	bool QueueGameStateCheck(bool full)
 	{
+		if (full)
+		{
+			_fullCheckWanted = true; // also for a check that is already queued
+		}
 		// only one check at a time, so tasks do not pile up while the game does not process them (e.g. loading screens)
 		if (_weatherTaskPending.exchange(true))
 		{
@@ -824,10 +1031,15 @@ namespace ImmersiveWinds {
 		}
 		_checkQueuedAt = std::chrono::steady_clock::now().time_since_epoch().count();
 		SKSE::GetTaskInterface()->AddTask([]() {
-			UpdateFromGameState();
+			RunGameStateCheck();
 			_weatherTaskPending = false;
 		});
 		return true;
+	}
+
+	bool RequestGameStateCheck()
+	{
+		return QueueGameStateCheck(true);
 	}
 
 	float SecondsSinceCheckQueued()
@@ -846,36 +1058,45 @@ namespace ImmersiveWinds {
 		return processId == GetCurrentProcessId();
 	}
 
-	// Background timer: watches the window focus and queues UpdateFromGameState on the main thread every few seconds.
+	// Background timer: watches the window focus and queues the game state check on the main thread every few
+	// seconds, with the simulated wind the movement check in between.
 	void WeatherCheck()
 	{
 		std::chrono::steady_clock::time_point lastCheck;
+		std::chrono::steady_clock::time_point lastFullCheck;
+		const float interval = _simulatedWind ? MOTION_CHECK_INTERVAL_SECONDS : WEATHER_CHECK_INTERVAL_SECONDS;
 
 		while (_keepRunning)
 		{
 			if (!IsGameInForeground())
 			{
-				if (_currentSwitchState != 0)
+				if (!_windPaused)
 				{
 					LOG("Game is in the background, stopping the fan.");
-					_currentSwitchState = 0;
 				}
+				PauseWind();
 				lastCheck = {}; // restores the level right when the game is back
+				lastFullCheck = {};
 			}
 			else if (menuStopsGameNoDialogue && _noWindInMenu)
 			{
 				// also handled here, so the fan stops even if the game does not process tasks while the menu is open
-				_currentSwitchState = 0; //No fan in menu.
+				PauseWind(); //No fan in menu.
 			}
-			else if (SecondsSince(lastCheck) >= WEATHER_CHECK_INTERVAL_SECONDS)
+			else if (SecondsSince(lastCheck) >= interval)
 			{
 				lastCheck = std::chrono::steady_clock::now();
+				const bool full = SecondsSince(lastFullCheck) >= WEATHER_CHECK_INTERVAL_SECONDS;
+				if (full)
+				{
+					lastFullCheck = lastCheck;
+				}
 				// a check that is still queued after GAME_STALLED_SECONDS means the game stands still
-				if (!RequestGameStateCheck() && SecondsSinceCheckQueued() >= GAME_STALLED_SECONDS && _currentSwitchState != 0)
+				if (!QueueGameStateCheck(full) && SecondsSinceCheckQueued() >= GAME_STALLED_SECONDS && !_windPaused)
 				{
 					// no fan while nobody plays; the next check after the game continues restores the level
 					LOG("Game stands still, stopping the fan.");
-					_currentSwitchState = 0;
+					PauseWind();
 				}
 			}
 			Sleep(FOCUS_CHECK_INTERVAL_MS);
@@ -892,7 +1113,12 @@ namespace ImmersiveWinds {
 
 		std::thread(ScanThread).detach();
 		// plug control, waits for the scan
-		std::thread(SwitchStateControllThread).detach();
+		if (_simulatedWind) {
+			std::thread(SimulatedWindThread).detach();
+		}
+		else {
+			std::thread(SwitchStateControllThread).detach();
+		}
 		// checks the game state
 		std::thread(WeatherCheck).detach();
 	}
@@ -905,6 +1131,7 @@ namespace ImmersiveWinds {
 	void SwitchOffOnExit()
 	{
 		_currentSwitchState = 0;
+		_windPaused = true;
 		_keepRunning = false;
 		// before the settings are loaded _useHttpSwitch is false and the plug ip comes from the ini file
 		SwitchPlug(0);
