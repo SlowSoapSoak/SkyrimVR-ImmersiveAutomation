@@ -45,7 +45,8 @@ Missing keys are added with their default value, existing values are never overw
 | `sSwitchType` | `tplink` | `tplink` or `http` |
 | `sPlugName` | `ImmersiveWindsPlug` | TP-Link: name of the plug in the Kasa app |
 | `bUseUdp` | `1` | TP-Link: send the commands with udp (`1`) or tcp (`0`) |
-| `bIntermittentModeEnabled` | `1` | `1`: levels 0-6 with on/off patterns. `0`: simple mode, fan on outside, off inside |
+| `iWindMode` | `0` | `0`: levels 0-6 (below). `1`: simulated wind, see [Simulated wind](#simulated-wind-iwindmode1) |
+| `bIntermittentModeEnabled` | `1` | `iWindMode=0` only. `1`: levels 0-6 with on/off patterns. `0`: simple mode, fan on outside, off inside |
 | `bNoWindInMenu` | `0` | `1`: fan off while a menu pauses the game |
 | `bLoggingEnabled` | `0` | detailed log |
 
@@ -95,6 +96,40 @@ The level is the base value of the place plus the modifiers, at most 6. The shou
 ### `[IntermittendModeStrengthConfig]`
 
 On/off pattern of the levels 1-6 in seconds: `fIntermittentL<n>On`, `fIntermittentL<n>Off`, plus a random time of up to `fIntermittentL<n>RandomAddOn` / `RandomAddOff`. `On` or `Off` of `0` keeps the plug always off / on in that level, other values are raised to at least 1 second. Level 0 is always off.
+
+## Simulated wind (`iWindMode=1`)
+
+Instead of fixed on/off patterns the plugin simulates gusty wind and switches the plug so the fan follows it:
+
+- **Base wind**: outside the wind speed of the current weather in the game (the value the trees and grass move with, 0-1) times `fGameWindScale`, plus `fOutsideMinWind` and the altitude modifiers of `[IntermittendModeLevelConfig]` (a level step is 1/6). Inside the base level of the place / 6 (house 0, dungeon and cave 1/6, ice cave 2/6). The shout raises it to 0.85 (first word) or full wind (both words).
+- **Turbulence**: random variation around the base wind (a mean reverting random process, not Perlin noise).
+- **Gusts and lulls**: at random times, each rises and falls softly within a few seconds.
+- **Motion wind**: running, riding and falling add wind, from the speed of the player.
+- **Fan**: the plugin estimates the fan speed from its spin up and spin down times. It switches on when the fan is slower than the wind and off when it is faster, so a weak wind becomes short pulses and a strong wind long on times.
+
+The gusts are simulated by the plugin, the game has no gust values (tree movement is computed inside the renderer); the strength follows the game. Every switch is a relay click: like the levels, a weak wind switches about every few seconds. Raise `fMinOnSeconds` / `fMinOffSeconds` for fewer switches.
+
+### `[SimulatedWind]`
+
+| Key | Default | |
+|---|---|---|
+| `fGameWindScale` | `1.0` | factor for the wind of the game |
+| `fOutsideMinWind` | `0.1` | wind outside even with calm weather |
+| `fTurbulence` | `0.25` | strength of the variation, share of the base wind |
+| `fTurbulenceSeconds` | `4.0` | how long a variation lasts on average |
+| `fGustsPerMinute` | `3.0` | average number of gusts and lulls |
+| `fGustMinSeconds` / `fGustMaxSeconds` | `3.0` / `8.0` | length of a gust |
+| `fGustStrength` | `0.6` | strongest gust, share of the base wind |
+| `fLullShare` | `0.25` | share of lulls (wind drops) among the gusts |
+| `fMotionStartSpeed` | `150` | speed (game units per second) from which movement adds wind; walking is below, running about 300 |
+| `fMotionFullSpeed` | `1000` | speed with the full motion wind (galloping horse) |
+| `fMotionWindMax` | `1.0` | motion wind at `fMotionFullSpeed`, `0` turns it off |
+| `fFanSpinUpSeconds` / `fFanSpinDownSeconds` | `1.5` / `4.0` | time constants of the fan: about the time to reach 2/3 of full speed / to lose 2/3 of its speed |
+| `fHysteresis` | `0.05` | tolerance before switching |
+| `fMinOnSeconds` / `fMinOffSeconds` | `1.0` / `1.0` | shortest on / off time |
+| `bWriteCsv` | `0` | `1`: writes `ImmersiveWindsSim.csv` next to the log (time, base, motion, target, fan, relay every 50 ms) for tuning |
+
+Tuning: start with the spin up and spin down times of your fan (switch it on and off and count). With `bLoggingEnabled=1` the log shows the base wind and the wind of the game every 3 seconds.
 
 ## Http switch
 
