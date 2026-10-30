@@ -147,4 +147,4 @@ Every pull request is built by GitHub Actions; the DLL is attached to the run as
 
 ## History
 
-Up to version 1.2.0 the plugin was a SKSEVR-only Visual Studio project in `IW_V3/` (with the SKSE sources and an unfinished *Immersive Sun* plugin for a second plug). That tree is no longer part of the repository; it is still in the git history, e.g. at commit `9c04d2f`.
+Up to version 1.2.0 both plugins were SKSEVR-only Visual Studio projects in `IW_V3/`, built against a copy of the SKSE sources; *Immersive Sun* got its data from a Papyrus script. They now live in `src/` and `sun/` and build with CommonLibSSE-NG. The old tree is no longer part of the repository; it is still in the git history, e.g. at commit `9c04d2f`.
