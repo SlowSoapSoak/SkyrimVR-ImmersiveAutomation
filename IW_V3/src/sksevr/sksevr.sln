@@ -11,8 +11,6 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "common_vc14", "..\common\co
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "immersive_sun_plugin", "immersive_sun_plugin\immersive_sun_plugin.vcxproj", "{E87324DD-F104-EA1B-6887-C9032934A3C3}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "immersive_winds_plugin", "immersive_winds_plugin\immersive_winds_plugin.vcxproj", "{C456684A-56CF-E654-655D-98A564BE152D}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -45,12 +43,6 @@ Global
 		{E87324DD-F104-EA1B-6887-C9032934A3C3}.Release|x64.ActiveCfg = Release|x64
 		{E87324DD-F104-EA1B-6887-C9032934A3C3}.Release|x64.Build.0 = Release|x64
 		{E87324DD-F104-EA1B-6887-C9032934A3C3}.Release|x86.ActiveCfg = Release|x64
-		{C456684A-56CF-E654-655D-98A564BE152D}.Debug|x64.ActiveCfg = Debug|x64
-		{C456684A-56CF-E654-655D-98A564BE152D}.Debug|x64.Build.0 = Debug|x64
-		{C456684A-56CF-E654-655D-98A564BE152D}.Debug|x86.ActiveCfg = Debug|x64
-		{C456684A-56CF-E654-655D-98A564BE152D}.Release|x64.ActiveCfg = Release|x64
-		{C456684A-56CF-E654-655D-98A564BE152D}.Release|x64.Build.0 = Release|x64
-		{C456684A-56CF-E654-655D-98A564BE152D}.Release|x86.ActiveCfg = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
