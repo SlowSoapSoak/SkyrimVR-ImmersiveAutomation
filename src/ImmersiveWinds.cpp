@@ -1,5 +1,6 @@
 #include "ImmersiveWinds.h"
 #include "HttpSwitch.h"
+#include "PlugFinder.h"
 #include "EndGameDetect.h"
 #include <algorithm>
 #include <array>
@@ -30,8 +31,6 @@ namespace ImmersiveWinds {
 		using RE::TESWeather;
 		using RE::TESWordOfPower;
 
-		const int SCAN_MAX_ATTEMPTS = 5;
-		const int SCAN_RETRY_DELAY_MS = 10000;
 		const float WEATHER_CHECK_INTERVAL_SECONDS = 3.0f;
 		const int FOCUS_CHECK_INTERVAL_MS = 250;
 		// the relay state is sent again after this time, in case a (udp) message got lost or the plug restarted
@@ -290,7 +289,7 @@ namespace ImmersiveWinds {
 	bool LoadConnectionConfig(TPLinkHelper & tpLinkConn)
 	{
 		std::lock_guard<std::mutex> lock(_connectionConfigMutex);
-		return tpLinkConn.LoadIPConfigFromFile(useUDP, workingIp);
+		return tpLinkConn.LoadIPConfigFromFile(GetIniPath(), "sTpLinkPlugIp", useUDP, workingIp);
 	}
 
 	void SetWorkingIp(const std::string & ip)
@@ -299,53 +298,14 @@ namespace ImmersiveWinds {
 		workingIp = ip;
 	}
 
-	void ScanAndCheckConnection()
-	{
-		const std::string sExecPath = GetIniPath();
-		const std::string savedIp = ReadIniString(INI_INTERNAL, "sTpLinkPlugIp", "", sExecPath);
-		LOG("READ ini file: %s", savedIp.c_str());
-
-		if (savedIp.empty()) {
-			LOG("no ip specified");
-		}
-		else {
-			TPLinkHelper tpLinkConn(_logsEnabled);
-			if (!tpLinkConn.ConnectToHost(9999, savedIp.c_str())) {
-				LOG("no connection");
-			}
-			else {
-				LOG("Connect Succeeded");
-				// check if correct device:
-				if (LoadConnectionConfig(tpLinkConn) && tpLinkConn.GetSystemInfo().alias() == PLUG_NAME) {
-					return;
-				}
-				LOG("wrong device");
-			}
-		}
-
-		// search for the device until one is found and save its ip to the ini file.
-		// A failed scan keeps the saved ip, so a plug that is only temporarily offline is not forgotten.
-		for (int attempt = 1; attempt <= SCAN_MAX_ATTEMPTS && _keepRunning; attempt++) {
-			SPScanner scanner;
-			const std::string ipOfDevice = scanner.ScanForTpPlug(PLUG_NAME);
-			LOG("scan %d returned: %s", attempt, ipOfDevice.c_str());
-			if (!ipOfDevice.empty()) {
-				WritePrivateProfileStringA(INI_INTERNAL, "sTpLinkPlugIp", ipOfDevice.c_str(), sExecPath.c_str());
-				SetWorkingIp(ipOfDevice);
-				return;
-			}
-			if (attempt < SCAN_MAX_ATTEMPTS) {
-				Sleep(SCAN_RETRY_DELAY_MS);
-			}
-		}
-		LOG_ERR("Could not find a plug named %s", PLUG_NAME);
-	}
-
 	void ScanThread()
 	{
 		// a http switch is addressed by its urls, there is nothing to search
 		if (!_useHttpSwitch) {
-			ScanAndCheckConnection();
+			const std::string ip = FindTpLinkPlug(GetIniPath(), "sTpLinkPlugIp", PLUG_NAME, _logsEnabled, _keepRunning);
+			if (!ip.empty()) {
+				SetWorkingIp(ip);
+			}
 		}
 		_scanFinished = true;
 	}

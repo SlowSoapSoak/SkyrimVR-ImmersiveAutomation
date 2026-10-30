@@ -3,8 +3,6 @@
 #include <string>
 #include <fstream>
 
-namespace ImmersiveWinds { std::string GetIniPath(); }
-
 namespace
 {
 	const int CONNECT_TIMEOUT_MS = 2000;
@@ -125,7 +123,7 @@ void TPLinkHelper::CloseConnection()
 	}
 }
 
-bool TPLinkHelper::LoadIPConfigFromFile(int &useUDP, std::string &defaultIp)
+bool TPLinkHelper::LoadIPConfigFromFile(const std::string &iniPath, const char *ipKey, int &useUDP, std::string &defaultIp)
 {
 	if(useUDP != -1 && !defaultIp.empty())
 	{
@@ -135,7 +133,7 @@ bool TPLinkHelper::LoadIPConfigFromFile(int &useUDP, std::string &defaultIp)
 	}
 	else
 	{
-		const std::string sExecPath = ImmersiveWinds::GetIniPath();
+		const std::string &sExecPath = iniPath;
 
 		if (INVALID_FILE_ATTRIBUTES == GetFileAttributesA(sExecPath.c_str()) && GetLastError() == ERROR_FILE_NOT_FOUND)
 		{
@@ -146,7 +144,7 @@ bool TPLinkHelper::LoadIPConfigFromFile(int &useUDP, std::string &defaultIp)
 		}
 
 		char iniFileBuffer[100];
-		GetPrivateProfileStringA("Internal", "sTpLinkPlugIp", "",
+		GetPrivateProfileStringA("Internal", ipKey, "",
 			iniFileBuffer, 100, sExecPath.c_str());
 		defaultIp = iniFileBuffer;
 		m_sIp = defaultIp;
