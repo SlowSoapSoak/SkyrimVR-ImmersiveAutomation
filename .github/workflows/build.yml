@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    # CommonLibSSE-NG is compiled from source, which takes a while
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,8 +26,14 @@ jobs:
         with:
           vcpkgGitCommitId: ee12231b20c95013c6638d845d04c91559a1d1ff
 
+      # CommonLibSSE-NG links a prebuilt CommonLibSSE.lib whenever GITHUB_ACTIONS is set, and that library
+      # was built against a different fmt than our vcpkg baseline (unresolved fmt::v12::detail::allocate).
+      # Without the variable it is built from source against our dependencies, like in a local build.
       - name: Configure
-        run: cmake --preset release
+        shell: pwsh
+        run: |
+          Remove-Item Env:GITHUB_ACTIONS
+          cmake --preset release
 
       - name: Build
         run: cmake --build --preset release
