@@ -34,8 +34,8 @@ add_commonlibsse_plugin(
 )
 immersive_plugin_settings(${PROJECT_NAME})
 
-# Immersive Sun: heat lamp control, shares the plug communication with Immersive Winds
-file(GLOB sun_sources CONFIGURE_DEPENDS sun/*.cpp sun/*.h)
+# Immersive Heat: heat lamp control (sunlight, fire), shares the plug communication with Immersive Winds
+file(GLOB heat_sources CONFIGURE_DEPENDS heat/*.cpp heat/*.h)
 set(shared_sources
 	src/DeviceInfo.cpp
 	src/Enumerations.cpp
@@ -46,12 +46,12 @@ set(shared_sources
 	src/TPLinkSPHelper.cpp
 )
 add_commonlibsse_plugin(
-	ImmersiveSunPluginScript
+	ImmersiveHeat
 	AUTHOR "shizof"
-	VERSION 1.1.0
-	SOURCES ${sun_sources} ${shared_sources}
+	VERSION 1.0.0
+	SOURCES ${heat_sources} ${shared_sources}
 )
-immersive_plugin_settings(ImmersiveSunPluginScript)
+immersive_plugin_settings(ImmersiveHeat)
 
 # Deploy the built DLL straight into the game: cmake -DSKYRIM_DATA_DIR=".../Data"
 set(SKYRIM_DATA_DIR "" CACHE PATH "Skyrim Data folder to copy the plugin into after each build")
@@ -60,7 +60,7 @@ if(SKYRIM_DATA_DIR)
 		TARGET ${PROJECT_NAME} POST_BUILD
 		COMMAND ${CMAKE_COMMAND} -E make_directory "${SKYRIM_DATA_DIR}/SKSE/Plugins"
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${PROJECT_NAME}> $<TARGET_PDB_FILE:${PROJECT_NAME}> "${SKYRIM_DATA_DIR}/SKSE/Plugins"
-		COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:ImmersiveSunPluginScript> $<TARGET_PDB_FILE:ImmersiveSunPluginScript> "${SKYRIM_DATA_DIR}/SKSE/Plugins"
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:ImmersiveHeat> $<TARGET_PDB_FILE:ImmersiveHeat> "${SKYRIM_DATA_DIR}/SKSE/Plugins"
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/Winds/ImmersiveWindsVR.esp" "${SKYRIM_DATA_DIR}"
 	)
 endif()

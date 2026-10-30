@@ -1,8 +1,9 @@
-#include "ImmersiveSun.h"
+#include "ImmersiveHeat.h"
 #include "HttpSwitch.h"
 #include "PlugFinder.h"
 #include "TPLinkSPHelper.h"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -15,19 +16,15 @@
 #include <vector>
 
 
-namespace ImmersiveSun {
+namespace ImmersiveHeat {
 
 	namespace
 	{
 		using Clock = std::chrono::steady_clock;
 
-		const char * PLUG_NAME = "ImmersiveSunPlug1";
-		const char * IP_KEY = "sTpLinkPlugIp1";
-
 		// ini sections
 		const char * INI_INTERNAL = "Internal";
 		const char * INI_GENERAL = "GeneralModConfig";
-		const char * INI_HTTP = "HttpSwitch";
 		const char * INI_HEAT = "HeatSources";
 
 		// how often the timer thread wakes up (focus check, heat check interval)
@@ -44,16 +41,27 @@ namespace ImmersiveSun {
 
 		// ---- settings ----
 
+		const int SWITCH_COUNT = 2;
+
+		// one device: a TP-Link plug found by its name, or a http switch
+		struct SwitchSettings
+		{
+			bool http = false;            // sSwitchType: "tplink" or "http"
+			std::string plugName;         // TP-Link: name of the plug in the Kasa app
+			std::string httpMethod = "GET";
+			std::string onUrl;
+			std::string offUrl;
+		};
+
 		struct Settings
 		{
 			bool logging = false;
 			bool noHeatInMenu = true;
 
-			// sSwitchType: "tplink" (TP-Link Kasa plug, found by a network scan) or "http" (sOnUrl / sOffUrl)
-			bool useHttpSwitch = false;
-			std::string httpMethod = "GET";
-			std::string httpOnUrl;
-			std::string httpOffUrl;
+			std::array<SwitchSettings, SWITCH_COUNT> switches;
+			// switch (1 or 2) of each heat source, 0 turns the source off; the same switch for both is on for either
+			int sunSwitch = 1;
+			int fireSwitch = 1;
 
 			// direct sunlight: outside, at day, bright sun and the player standing in the light
 			bool sunlight = true;
@@ -87,28 +95,36 @@ namespace ImmersiveSun {
 
 		// ---- state ----
 
-		std::atomic<bool> _keepRunning(true);
-		// whether the plug should be on, written by the heat check and the focus handling, read by the switch thread
-		std::atomic<bool> _heatOn(false);
-		// wakes the switch thread when _heatOn changes
-		std::mutex _switchMutex;
-		std::condition_variable _switchSignal;
+		struct SwitchState
+		{
+			// whether a heat source uses this switch, set by LoadSettings
+			bool used = false;
+			// whether the device should be on, written by the heat check, the events and the focus handling
+			std::atomic<bool> wanted = false;
 
-		// workingIp and useUDP are written by the scan thread and read by the switch thread
-		std::mutex _connectionConfigMutex;
-		std::string workingIp;
-		int useUDP = -1;
+			// TP-Link: workingIp and useUDP are written by the scan thread and read by the switch thread
+			std::mutex connectionMutex;
+			std::string workingIp;
+			int useUDP = -1;
+		};
+
+		std::array<SwitchState, SWITCH_COUNT> _switches;
+
+		std::atomic<bool> _keepRunning(true);
+		// wakes the switch thread when a wanted state changes
+		std::mutex _signalMutex;
+		std::condition_variable _switchSignal;
 
 		std::atomic<bool> _scanFinished(false);
 		std::atomic<bool> _checkPending(false);
 		std::atomic<Clock::rep> _checkQueuedAt(0);
-		// end of the heat after a fire hit (steady_clock ticks), written by the hit event
-		std::atomic<Clock::rep> _fireHitUntil(0);
+		// end of the heat after a fire event (steady_clock ticks)
+		std::atomic<Clock::rep> _fireEventUntil(0);
 
 		RE::BGSKeyword * keywordLocSetOutdoor = nullptr;
 		// model check results per base form, only used on the main thread
 		std::unordered_map<RE::FormID, bool> _fireModelCache;
-		// last reason that was logged, to log only changes
+		// last logged heat state, to log only changes
 		std::string _lastReason;
 		// main thread only: result of the last fire search and of the last sunlight check (for the hysteresis)
 		bool _nearFire = false;
@@ -173,7 +189,7 @@ namespace ImmersiveSun {
 	std::string GetIniPath()
 	{
 		const auto dir = SKSE::log::log_directory();
-		return dir ? (*dir / "immersiveSun.ini").string() : "immersiveSun.ini";
+		return dir ? (*dir / "immersiveHeat.ini").string() : "immersiveHeat.ini";
 	}
 
 	std::string ReadIniString(const char * section, const char * key, const char * defaultValue, const std::string & path)
@@ -201,6 +217,23 @@ namespace ImmersiveSun {
 		return strtof(ReadIniString(section, key, std::to_string(defaultValue).c_str(), path).c_str(), nullptr);
 	}
 
+	// [Switch1], [Switch2]
+	std::string SwitchSection(int index)
+	{
+		return "Switch" + std::to_string(index + 1);
+	}
+
+	// [Internal] sSwitch1Ip, sSwitch2Ip: ip of the TP-Link plug, found and written by the plugin
+	std::string SwitchIpKey(int index)
+	{
+		return "sSwitch" + std::to_string(index + 1) + "Ip";
+	}
+
+	std::string DefaultPlugName(int index)
+	{
+		return "ImmersiveHeatPlug" + std::to_string(index + 1);
+	}
+
 	// ---- settings ----
 
 	void WriteDefaultsToIniFile()
@@ -211,17 +244,23 @@ namespace ImmersiveSun {
 		if (ReadIniString(INI_INTERNAL, "sModVersion", "", path) != MOD_VERSION) {
 			WritePrivateProfileStringA(INI_INTERNAL, "sModVersion", MOD_VERSION.c_str(), path.c_str());
 		}
-		WriteIniIfMissing(INI_INTERNAL, IP_KEY, "", path);
 
-		WriteIniIfMissing(INI_GENERAL, "sSwitchType", "tplink", path);
 		WriteIniIfMissing(INI_GENERAL, "bUseUdp", "1", path);
 		WriteIniIfMissing(INI_GENERAL, "bLoggingEnabled", "0", path);
 		WriteIniIfMissing(INI_GENERAL, "bNoHeatInMenu", "1", path);
 
-		WriteIniIfMissing(INI_HTTP, "sHttpMethod", "GET", path);
-		WriteIniIfMissing(INI_HTTP, "sOnUrl", "", path);
-		WriteIniIfMissing(INI_HTTP, "sOffUrl", "", path);
+		for (int i = 0; i < SWITCH_COUNT; i++) {
+			const std::string section = SwitchSection(i);
+			WriteIniIfMissing(INI_INTERNAL, SwitchIpKey(i).c_str(), "", path);
+			WriteIniIfMissing(section.c_str(), "sSwitchType", "tplink", path);
+			WriteIniIfMissing(section.c_str(), "sPlugName", DefaultPlugName(i), path);
+			WriteIniIfMissing(section.c_str(), "sHttpMethod", "GET", path);
+			WriteIniIfMissing(section.c_str(), "sOnUrl", "", path);
+			WriteIniIfMissing(section.c_str(), "sOffUrl", "", path);
+		}
 
+		WriteIniIfMissing(INI_HEAT, "iSunSwitch", std::to_string(defaults.sunSwitch), path);
+		WriteIniIfMissing(INI_HEAT, "iFireSwitch", std::to_string(defaults.fireSwitch), path);
 		WriteIniIfMissing(INI_HEAT, "bSunlight", "1", path);
 		WriteIniIfMissing(INI_HEAT, "fMinSunGlare", std::to_string(defaults.minSunGlare), path);
 		WriteIniIfMissing(INI_HEAT, "fMinLightLevel", std::to_string(defaults.minLightLevel), path);
@@ -238,6 +277,16 @@ namespace ImmersiveSun {
 		WriteIniIfMissing(INI_HEAT, "fCheckIntervalSeconds", std::to_string(defaults.checkIntervalSeconds), path);
 	}
 
+	int ReadSwitchNumber(const char * key, int defaultValue, const std::string & path)
+	{
+		const int number = GetPrivateProfileIntA(INI_HEAT, key, defaultValue, path.c_str());
+		if (number < 0 || number > SWITCH_COUNT) {
+			_MESSAGE("%s=%d is not a switch (0-%d), using 0", key, number, SWITCH_COUNT);
+			return 0;
+		}
+		return number;
+	}
+
 	void LoadSettings()
 	{
 		const std::string path = GetIniPath();
@@ -246,96 +295,147 @@ namespace ImmersiveSun {
 
 		s.logging = ReadIniBool(INI_GENERAL, "bLoggingEnabled", defaults.logging, path);
 		s.noHeatInMenu = ReadIniBool(INI_GENERAL, "bNoHeatInMenu", defaults.noHeatInMenu, path);
-		s.useHttpSwitch = _stricmp(Trim(ReadIniString(INI_GENERAL, "sSwitchType", "tplink", path)).c_str(), "http") == 0;
-		s.httpMethod = Trim(ReadIniString(INI_HTTP, "sHttpMethod", "GET", path));
-		s.httpOnUrl = Trim(ReadIniString(INI_HTTP, "sOnUrl", "", path));
-		s.httpOffUrl = Trim(ReadIniString(INI_HTTP, "sOffUrl", "", path));
 
-		s.sunlight = ReadIniBool(INI_HEAT, "bSunlight", defaults.sunlight, path);
+		for (int i = 0; i < SWITCH_COUNT; i++) {
+			const std::string section = SwitchSection(i);
+			SwitchSettings & sw = s.switches[i];
+			sw.http = _stricmp(Trim(ReadIniString(section.c_str(), "sSwitchType", "tplink", path)).c_str(), "http") == 0;
+			sw.plugName = Trim(ReadIniString(section.c_str(), "sPlugName", DefaultPlugName(i).c_str(), path));
+			sw.httpMethod = Trim(ReadIniString(section.c_str(), "sHttpMethod", "GET", path));
+			sw.onUrl = Trim(ReadIniString(section.c_str(), "sOnUrl", "", path));
+			sw.offUrl = Trim(ReadIniString(section.c_str(), "sOffUrl", "", path));
+		}
+
+		s.sunSwitch = ReadSwitchNumber("iSunSwitch", defaults.sunSwitch, path);
+		s.fireSwitch = ReadSwitchNumber("iFireSwitch", defaults.fireSwitch, path);
+
+		s.sunlight = ReadIniBool(INI_HEAT, "bSunlight", defaults.sunlight, path) && s.sunSwitch != 0;
 		s.minSunGlare = ReadIniFloat(INI_HEAT, "fMinSunGlare", defaults.minSunGlare, path);
 		s.minLightLevel = ReadIniFloat(INI_HEAT, "fMinLightLevel", defaults.minLightLevel, path);
 		s.lightLevelHysteresis = std::max(0.0f, ReadIniFloat(INI_HEAT, "fLightLevelHysteresis", defaults.lightLevelHysteresis, path));
 		s.dayStartHour = ReadIniFloat(INI_HEAT, "fDayStartHour", defaults.dayStartHour, path);
 		s.dayEndHour = ReadIniFloat(INI_HEAT, "fDayEndHour", defaults.dayEndHour, path);
-		s.nearFire = ReadIniBool(INI_HEAT, "bNearFire", defaults.nearFire, path);
+		s.nearFire = ReadIniBool(INI_HEAT, "bNearFire", defaults.nearFire, path) && s.fireSwitch != 0;
 		s.fireRadius = ReadIniFloat(INI_HEAT, "fFireRadius", defaults.fireRadius, path);
 		s.fireModels = SplitLowerList(ReadIniString(INI_HEAT, "sFireModels", DEFAULT_FIRE_MODELS, path));
 		s.fireModelsExclude = SplitLowerList(ReadIniString(INI_HEAT, "sFireModelsExclude", DEFAULT_FIRE_MODELS_EXCLUDE, path));
-		s.fireHits = ReadIniBool(INI_HEAT, "bFireHits", defaults.fireHits, path);
+		s.fireHits = ReadIniBool(INI_HEAT, "bFireHits", defaults.fireHits, path) && s.fireSwitch != 0;
 		s.fireHitSeconds = ReadIniFloat(INI_HEAT, "fFireHitSeconds", defaults.fireHitSeconds, path);
-		s.ownFireSpells = ReadIniBool(INI_HEAT, "bOwnFireSpells", defaults.ownFireSpells, path);
+		s.ownFireSpells = ReadIniBool(INI_HEAT, "bOwnFireSpells", defaults.ownFireSpells, path) && s.fireSwitch != 0;
 		s.checkIntervalSeconds = std::max(MIN_CHECK_INTERVAL_SECONDS, ReadIniFloat(INI_HEAT, "fCheckIntervalSeconds", defaults.checkIntervalSeconds, path));
 
-		_MESSAGE("Heat sources: sunlight %d, fire nearby %d (radius %g), fire hits %d, own fire spells %d, switch %s",
-			s.sunlight, s.nearFire, s.fireRadius, s.fireHits, s.ownFireSpells, s.useHttpSwitch ? "http" : "tplink");
+		// only switches a heat source points at are searched and switched
+		const bool anyFire = s.nearFire || s.fireHits || s.ownFireSpells;
+		for (int i = 0; i < SWITCH_COUNT; i++) {
+			_switches[i].used = (s.sunlight && s.sunSwitch == i + 1) || (anyFire && s.fireSwitch == i + 1);
+			if (_switches[i].used) {
+				const SwitchSettings & sw = s.switches[i];
+				_MESSAGE("Switch %d: %s %s", i + 1, sw.http ? "http" : "tplink", sw.http ? sw.onUrl.c_str() : sw.plugName.c_str());
+			}
+		}
+
+		_MESSAGE("Heat sources: sunlight %d on switch %d; fire nearby %d (radius %g), fire hits %d, own fire spells %d on switch %d",
+			s.sunlight, s.sunSwitch, s.nearFire, s.fireRadius, s.fireHits, s.ownFireSpells, s.fireSwitch);
 	}
 
-	// ---- plug ----
+	// ---- switches ----
 
-	bool LoadConnectionConfig(TPLinkHelper & tpLinkConn)
+	bool LoadConnectionConfig(int index, TPLinkHelper & tpLinkConn)
 	{
-		std::lock_guard<std::mutex> lock(_connectionConfigMutex);
-		return tpLinkConn.LoadIPConfigFromFile(GetIniPath(), IP_KEY, useUDP, workingIp);
+		SwitchState & state = _switches[index];
+		std::lock_guard<std::mutex> lock(state.connectionMutex);
+		return tpLinkConn.LoadIPConfigFromFile(GetIniPath(), SwitchIpKey(index).c_str(), state.useUDP, state.workingIp);
 	}
 
 	void ScanThread()
 	{
-		// a http switch is addressed by its urls, there is nothing to search
-		if (!_settings.useHttpSwitch) {
-			const std::string ip = FindTpLinkPlug(GetIniPath(), IP_KEY, PLUG_NAME, _settings.logging, _keepRunning);
+		for (int i = 0; i < SWITCH_COUNT && _keepRunning; i++) {
+			// a http switch is addressed by its urls, there is nothing to search
+			if (!_switches[i].used || _settings.switches[i].http) {
+				continue;
+			}
+			const std::string ip = FindTpLinkPlug(GetIniPath(), SwitchIpKey(i).c_str(), _settings.switches[i].plugName, _settings.logging, _keepRunning);
 			if (!ip.empty()) {
-				std::lock_guard<std::mutex> lock(_connectionConfigMutex);
-				workingIp = ip;
+				std::lock_guard<std::mutex> lock(_switches[i].connectionMutex);
+				_switches[i].workingIp = ip;
 			}
 		}
 		_scanFinished = true;
 	}
 
-	bool SwitchPlug(bool on)
+	bool SwitchPlug(int index, bool on)
 	{
-		if (_settings.useHttpSwitch) {
-			return HttpSwitch::Request(_settings.httpMethod, on ? _settings.httpOnUrl : _settings.httpOffUrl, _settings.logging);
+		const SwitchSettings & sw = _settings.switches[index];
+		if (sw.http) {
+			return HttpSwitch::Request(sw.httpMethod, on ? sw.onUrl : sw.offUrl, _settings.logging);
 		}
 		TPLinkHelper tpLinkConn(_settings.logging);
-		return LoadConnectionConfig(tpLinkConn) && tpLinkConn.SwitchRelayState(on ? 1 : 0);
+		return LoadConnectionConfig(index, tpLinkConn) && tpLinkConn.SwitchRelayState(on ? 1 : 0);
 	}
 
-	// Sends the wanted state to the plug when it changes, and again every RELAY_RESEND_INTERVAL_SECONDS.
+	void SetWanted(int index, bool on)
+	{
+		if (index < 0 || index >= SWITCH_COUNT) {
+			return;
+		}
+		if (_switches[index].wanted.exchange(on) != on) {
+			// the lock makes sure the switch thread is either before its check or waiting, so the signal is not lost
+			{ std::lock_guard<std::mutex> lock(_signalMutex); }
+			_switchSignal.notify_one();
+		}
+	}
+
+	// sets every switch from the two heat sources; a switch used by both is on for either
+	void SetHeat(bool sun, bool fire)
+	{
+		for (int i = 0; i < SWITCH_COUNT; i++) {
+			SetWanted(i, (sun && _settings.sunSwitch == i + 1) || (fire && _settings.fireSwitch == i + 1));
+		}
+	}
+
+	// Sends the wanted state to each used switch when it changes, and again every RELAY_RESEND_INTERVAL_SECONDS.
 	void SwitchThread()
 	{
-		// wait until the plug was found, otherwise the first switch commands would get lost
+		// wait until the plugs were found, otherwise the first switch commands would get lost
 		while (!_scanFinished && _keepRunning) {
 			Sleep(100);
 		}
 
-		bool sentState = false;
-		Clock::time_point lastSend;
-		bool firstSend = true;
-		while (_keepRunning) {
-			const bool wanted = _heatOn;
-			if (firstSend || wanted != sentState || SecondsSince(lastSend) >= RELAY_RESEND_INTERVAL_SECONDS) {
-				if (firstSend || wanted != sentState) {
-					Log("Switching the plug %s", wanted ? "on" : "off");
-				}
-				if (!SwitchPlug(wanted)) {
-					Log("Switching the plug %s failed", wanted ? "on" : "off");
-				}
-				sentState = wanted;
-				lastSend = Clock::now();
-				firstSend = false;
-			}
-			// wake up right when the wanted state changes, at the latest for the resend
-			std::unique_lock<std::mutex> lock(_switchMutex);
-			_switchSignal.wait_for(lock, std::chrono::milliseconds(500), [&sentState] { return !_keepRunning || _heatOn != sentState; });
-		}
-	}
+		std::array<bool, SWITCH_COUNT> sent{};
+		std::array<Clock::time_point, SWITCH_COUNT> lastSend{};
+		std::array<bool, SWITCH_COUNT> firstSend;
+		firstSend.fill(true);
 
-	void SetHeat(bool on)
-	{
-		if (_heatOn.exchange(on) != on) {
-			// the lock makes sure the switch thread is either before its check or waiting, so the signal is not lost
-			{ std::lock_guard<std::mutex> lock(_switchMutex); }
-			_switchSignal.notify_one();
+		const auto anyChange = [&sent] {
+			for (int i = 0; i < SWITCH_COUNT; i++) {
+				if (_switches[i].used && _switches[i].wanted != sent[i]) {
+					return true;
+				}
+			}
+			return false;
+		};
+
+		while (_keepRunning) {
+			for (int i = 0; i < SWITCH_COUNT; i++) {
+				if (!_switches[i].used) {
+					continue;
+				}
+				const bool wanted = _switches[i].wanted;
+				if (firstSend[i] || wanted != sent[i] || SecondsSince(lastSend[i]) >= RELAY_RESEND_INTERVAL_SECONDS) {
+					if (firstSend[i] || wanted != sent[i]) {
+						Log("Switching switch %d %s", i + 1, wanted ? "on" : "off");
+					}
+					if (!SwitchPlug(i, wanted)) {
+						Log("Switching switch %d %s failed", i + 1, wanted ? "on" : "off");
+					}
+					sent[i] = wanted;
+					lastSend[i] = Clock::now();
+					firstSend[i] = false;
+				}
+			}
+			// wake up right when a wanted state changes, at the latest for the resend
+			std::unique_lock<std::mutex> lock(_signalMutex);
+			_switchSignal.wait_for(lock, std::chrono::milliseconds(500), [&anyChange] { return !_keepRunning || anyChange(); });
 		}
 	}
 
@@ -414,6 +514,15 @@ namespace ImmersiveSun {
 		return found;
 	}
 
+	bool IsNearFireCached(RE::PlayerCharacter * player)
+	{
+		if (SecondsSince(_lastFireScan) >= FIRE_SCAN_INTERVAL_SECONDS) {
+			_lastFireScan = Clock::now();
+			_nearFire = IsNearFire(player);
+		}
+		return _nearFire;
+	}
+
 	// burning: fire damage effects active on the player (fire spells, dragon breath, hazards, enchantments)
 	bool IsBurning(RE::PlayerCharacter * player)
 	{
@@ -471,45 +580,38 @@ namespace ImmersiveSun {
 			&& (_settings.minLightLevel <= 0 || lightLevel > minLightLevel);
 	}
 
-	bool IsNearFireCached(RE::PlayerCharacter * player)
+	// the reason for fire heat, or "" for none
+	const char * FireReason(RE::PlayerCharacter * player)
 	{
-		if (SecondsSince(_lastFireScan) >= FIRE_SCAN_INTERVAL_SECONDS) {
-			_lastFireScan = Clock::now();
-			_nearFire = IsNearFire(player);
+		if (Clock::now() < FromTicks(_fireEventUntil.load())) {
+			return "fire event"; // hit, fire effect or own fire spell, see the events below
 		}
-		return _nearFire;
+		if (_settings.fireHits && IsBurning(player)) {
+			return "burning";
+		}
+		if (_settings.ownFireSpells && IsCastingFire(player)) {
+			return "casting fire";
+		}
+		if (_settings.nearFire && IsNearFireCached(player)) {
+			return "fire nearby";
+		}
+		return "";
 	}
 
-	// Reads the heat sources and sets _heatOn. Calls into the engine, so it must run on the game's main thread.
+	// Reads the heat sources and sets the switches. Calls into the engine, so it must run on the game's main thread.
 	void UpdateFromGameState()
 	{
 		auto player = RE::PlayerCharacter::GetSingleton();
-		std::string reason;
-		// checked every time so the hysteresis always knows the last sunlight state
-		_inSunlight = _settings.sunlight && player && player->Is3DLoaded() && IsInSunlight(player);
-		if (!player || !player->Is3DLoaded()) {
-			reason = "";
-		}
-		else if (_settings.noHeatInMenu && RE::UI::GetSingleton() && RE::UI::GetSingleton()->GameIsPaused()) {
-			reason = "";
-		}
-		else if (Clock::now() < FromTicks(_fireHitUntil.load())) {
-			reason = "fire event"; // hit, fire effect or own fire spell, see the events below
-		}
-		else if (_settings.fireHits && IsBurning(player)) {
-			reason = "burning";
-		}
-		else if (_settings.ownFireSpells && IsCastingFire(player)) {
-			reason = "casting fire";
-		}
-		else if (_settings.nearFire && IsNearFireCached(player)) {
-			reason = "fire nearby";
-		}
-		else if (_inSunlight) {
-			reason = "sunlight";
-		}
+		const bool playing = player && player->Is3DLoaded()
+			&& !(_settings.noHeatInMenu && RE::UI::GetSingleton() && RE::UI::GetSingleton()->GameIsPaused());
 
-		SetHeat(!reason.empty());
+		// checked every time so the hysteresis always knows the last sunlight state
+		_inSunlight = playing && _settings.sunlight && IsInSunlight(player);
+		const std::string fireReason = playing ? FireReason(player) : "";
+
+		SetHeat(_inSunlight, !fireReason.empty());
+
+		const std::string reason = std::string(_inSunlight ? "sunlight" : "") + (_inSunlight && !fireReason.empty() ? ", " : "") + fireReason;
 		if (reason != _lastReason) {
 			Log("Heat: %s", reason.empty() ? "none" : reason.c_str());
 			_lastReason = reason;
@@ -547,13 +649,13 @@ namespace ImmersiveSun {
 		Clock::time_point lastCheck;
 		while (_keepRunning) {
 			if (!IsGameInForeground()) {
-				SetHeat(false);
+				SetHeat(false, false);
 				lastCheck = {}; // check right when the game is back
 			}
 			else if (SecondsSince(lastCheck) >= _settings.checkIntervalSeconds) {
 				lastCheck = Clock::now();
 				if (!RequestGameStateCheck() && SecondsSince(FromTicks(_checkQueuedAt.load())) >= GAME_STALLED_SECONDS) {
-					SetHeat(false);
+					SetHeat(false, false);
 				}
 			}
 			Sleep(TIMER_INTERVAL_MS);
@@ -561,7 +663,7 @@ namespace ImmersiveSun {
 	}
 
 	// ---- events ----
-	// The events switch the plug on directly, without waiting for the next check on the main thread.
+	// The fire events switch the fire switch on directly, without waiting for the next check on the main thread.
 	// The heat then lasts at least fFireHitSeconds; the checks keep it on while the fire goes on.
 
 	bool IsPlayer(const RE::NiPointer<RE::TESObjectREFR> & ref)
@@ -572,11 +674,9 @@ namespace ImmersiveSun {
 	void HeatFromFireEvent(const char * what)
 	{
 		const auto until = Clock::now() + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<float>(_settings.fireHitSeconds));
-		_fireHitUntil = until.time_since_epoch().count();
-		if (!_heatOn) {
-			Log("Heat: %s (event)", what);
-		}
-		SetHeat(true);
+		_fireEventUntil = until.time_since_epoch().count();
+		Log("Fire event: %s", what);
+		SetWanted(_settings.fireSwitch - 1, true);
 	}
 
 	// hit by a fire spell, shout or fire enchanted weapon
@@ -643,15 +743,19 @@ namespace ImmersiveSun {
 
 	void SwitchOffOnExit()
 	{
-		_heatOn = false;
 		_keepRunning = false;
-		// before the settings are loaded the plug ip comes from the ini file
-		SwitchPlug(false);
+		// only the used switches; before the settings are loaded no switch is used
+		for (int i = 0; i < SWITCH_COUNT; i++) {
+			if (_switches[i].used) {
+				_switches[i].wanted = false;
+				SwitchPlug(i, false);
+			}
+		}
 	}
 
 	namespace
 	{
-		// Switches the plug off when the game exits. Defined last in this file on purpose: objects of one
+		// Switches the plugs off when the game exits. Defined last in this file on purpose: objects of one
 		// file are destroyed in reverse order, so the settings and connection data above still exist then.
 		struct ExitHandler
 		{
