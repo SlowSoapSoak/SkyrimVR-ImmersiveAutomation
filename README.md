@@ -106,25 +106,34 @@ Set `sSwitchType=http` and the two urls. Any answer with status 2xx counts as su
 | Tasmota | `http://<ip>/cm?cmnd=Power%20On` | `http://<ip>/cm?cmnd=Power%20Off` |
 | Home Assistant webhook (`sHttpMethod=POST`) | `http://<ha>:8123/api/webhook/<on id>` | `http://<ha>:8123/api/webhook/<off id>` |
 
-## Immersive Sun (heat lamp)
+## Immersive Heat (heat lamp)
 
-A second, independent SKSE plugin, `ImmersiveSunPluginScript.dll`, switches another smart plug, e.g. with an infrared heat lamp, while the player is near a heat source:
+A second, independent SKSE plugin, `ImmersiveHeat.dll`, switches one or two more smart plugs, e.g. with an infrared heat lamp, while the player is near a heat source. It has two heat sources:
 
-- **Fire hits**: hit by fire (fire spells, dragon breath, fire enchanted weapons) or any fire damage effect applied to the player (traps, hazards, cloak spells) switches on right away, from the game event, and keeps it on for at least `fFireHitSeconds`; it stays on while fire damage effects are active on the player.
-- **Own fire spells**: while the player charges a fire spell; casting one switches on right away and keeps it on for at least `fFireHitSeconds`.
-- **Fire nearby**: a reference within `fFireRadius` whose model path contains a word of `sFireModels` and none of `sFireModelsExclude` (campfires, braziers, hearths, forges, lava, ...). This is a heuristic: with `bLoggingEnabled=1` the log lists every model it counts as fire, which helps to tune the two lists.
-- **Direct sunlight**: outside (or in an interior marked as outdoor), between `fDayStartHour` and `fDayEndHour`, with a sun glare of the weather above `fMinSunGlare` and the light level at the player above `fMinLightLevel`.
+- **Sunlight**: outside (or in an interior marked as outdoor), between `fDayStartHour` and `fDayEndHour`, with a sun glare of the weather above `fMinSunGlare` and the light level at the player above `fMinLightLevel`.
+- **Fire**:
+  - hit by fire (fire spells, dragon breath, fire enchanted weapons) or any fire damage effect applied to the player (traps, hazards, cloak spells) switches on right away, from the game event, and keeps it on for at least `fFireHitSeconds`; it stays on while fire damage effects are active on the player (`bFireHits`)
+  - while the player charges a fire spell; casting one switches on right away (`bOwnFireSpells`)
+  - a reference within `fFireRadius` whose model path contains a word of `sFireModels` and none of `sFireModelsExclude` (campfires, braziers, hearths, forges, lava, ...) (`bNearFire`). This is a heuristic: with `bLoggingEnabled=1` the log lists every model it counts as fire, which helps to tune the two lists.
+
+**One device or two**: `iSunSwitch` and `iFireSwitch` choose the switch of each source (`1` or `2`, `0` turns the source off). With both on `1` (the default) one device heats for sunlight and for fire. With `iFireSwitch=2`, fire gets its own device. Only switches a source points at are searched and switched.
 
 Like the fan it is off while the game is in the background (SE/AE), when the game stands still, during menus that pause the game (`bNoHeatInMenu`) and when the game exits.
 
-Installation: copy the DLL to `Data/SKSE/Plugins`. TP-Link: name the plug **`ImmersiveSunPlug1`**. No ESP is needed. Settings are written to `immersiveSun.ini` next to `immersiveWinds.ini`, the log is `ImmersiveSunPluginScript.log`.
+Installation: copy the DLL to `Data/SKSE/Plugins`. TP-Link: name the plugs as in `sPlugName` of their switch (default **`ImmersiveHeatPlug1`** and **`ImmersiveHeatPlug2`**), or set the switch to http. No ESP is needed. Settings are written to `immersiveHeat.ini` next to `immersiveWinds.ini`, the log is `ImmersiveHeat.log`.
+
+Upgrading from the test builds of *Immersive Sun*: delete `ImmersiveSunPluginScript.dll`, otherwise both plugins run.
 
 | Section | Key | Default |
 |---|---|---|
-| `[GeneralModConfig]` | `sSwitchType`, `bUseUdp`, `bLoggingEnabled` | `tplink`, `1`, `0` (as for the fan) |
+| `[GeneralModConfig]` | `bUseUdp`, `bLoggingEnabled` | `1`, `0` (as for the fan, for both TP-Link switches) |
 | | `bNoHeatInMenu` | `1` |
-| `[HttpSwitch]` | `sHttpMethod`, `sOnUrl`, `sOffUrl` | as for the fan |
-| `[HeatSources]` | `bFireHits`, `fFireHitSeconds` | `1`, `3` |
+| `[Switch1]`, `[Switch2]` | `sSwitchType` | `tplink` or `http` |
+| | `sPlugName` | `ImmersiveHeatPlug1`, `ImmersiveHeatPlug2` (TP-Link name in the Kasa app) |
+| | `sHttpMethod`, `sOnUrl`, `sOffUrl` | as for the fan's [http switch](#http-switch) |
+| `[Internal]` | `sSwitch1Ip`, `sSwitch2Ip` | ip of the TP-Link plugs, found and written by the plugin |
+| `[HeatSources]` | `iSunSwitch`, `iFireSwitch` | `1`, `1` |
+| | `bFireHits`, `fFireHitSeconds` | `1`, `3` |
 | | `bOwnFireSpells` | `1` |
 | | `bNearFire`, `fFireRadius` | `1`, `350` (game units, about 5 m) |
 | | `sFireModels` | `fire,flame,brazier,forge,smelter,lava,embers,hearth` |
@@ -149,4 +158,4 @@ Every pull request is built by GitHub Actions; the DLL is attached to the run as
 
 ## History
 
-Up to version 1.2.0 both plugins were SKSEVR-only Visual Studio projects in `IW_V3/`, built against a copy of the SKSE sources; *Immersive Sun* got its data from a Papyrus script. They now live in `src/` and `sun/` and build with CommonLibSSE-NG. The old tree is no longer part of the repository; it is still in the git history, e.g. at commit `9c04d2f`.
+Up to version 1.2.0 both plugins were SKSEVR-only Visual Studio projects in `IW_V3/`, built against a copy of the SKSE sources; *Immersive Sun* got its data from a Papyrus script. Immersive Winds now lives in `src/`, Immersive Sun became *Immersive Heat* in `heat/`, both build with CommonLibSSE-NG. The old tree is no longer part of the repository; it is still in the git history, e.g. at commit `9c04d2f`.
