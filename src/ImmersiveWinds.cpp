@@ -804,6 +804,18 @@ namespace ImmersiveWinds {
 		}
 	}
 
+	void RequestGameStateCheck()
+	{
+		// only one check at a time, so tasks do not pile up while the game does not process them (e.g. loading screens)
+		if (!_weatherTaskPending.exchange(true))
+		{
+			SKSE::GetTaskInterface()->AddTask([]() {
+				UpdateFromGameState();
+				_weatherTaskPending = false;
+			});
+		}
+	}
+
 	// Background timer: queues UpdateFromGameState on the main thread every few seconds.
 	void WeatherCheck()
 	{
@@ -814,13 +826,9 @@ namespace ImmersiveWinds {
 				// also handled here, so the fan stops even if the game does not process tasks while the menu is open
 				_currentSwitchState = 0; //No fan in menu.
 			}
-			// only one check at a time, so tasks do not pile up while the game does not process them (e.g. loading screens)
-			else if (!_weatherTaskPending.exchange(true))
+			else
 			{
-				SKSE::GetTaskInterface()->AddTask([]() {
-					UpdateFromGameState();
-					_weatherTaskPending = false;
-				});
+				RequestGameStateCheck();
 			}
 			Sleep(WEATHER_CHECK_INTERVAL_MS);
 		}
