@@ -1,122 +1,127 @@
 #include "TPLinkSPHelper.h"
 #include "Enumerations.h"
-#include <iostream>
 #include <string>
-#include <fstream> 
-#include <stdio.h>
-#include <shlobj.h>
-#include <intrin.h>
+#include <fstream>
 
 namespace ImmersiveWinds { std::string GetIniPath(); }
+
+namespace
+{
+	const int CONNECT_TIMEOUT_MS = 2000;
+	const int RECEIVE_TIMEOUT_MS = 2000;
+	// tcp messages start with the length of the encrypted payload (4 bytes, big endian)
+	const size_t TCP_HEADER_LENGTH = 4;
+	// upper bound for a tcp answer, protects against a broken length header
+	const size_t MAX_RESPONSE_LENGTH = 64 * 1024;
+
+	// connect() with a timeout, a blocking connect to an unreachable ip takes about 20 seconds
+	bool ConnectWithTimeout(SOCKET socket, const sockaddr_in& target, int timeoutMs)
+	{
+		u_long nonBlocking = 1;
+		if (ioctlsocket(socket, FIONBIO, &nonBlocking) == SOCKET_ERROR) {
+			return false;
+		}
+
+		bool connected = connect(socket, (const sockaddr*)&target, sizeof(target)) == 0;
+		if (!connected && WSAGetLastError() == WSAEWOULDBLOCK) {
+			fd_set writeSet;
+			FD_ZERO(&writeSet);
+			FD_SET(socket, &writeSet);
+			// a failed connect is reported in the error set, not the write set
+			fd_set errorSet;
+			FD_ZERO(&errorSet);
+			FD_SET(socket, &errorSet);
+			timeval timeout;
+			timeout.tv_sec = timeoutMs / 1000;
+			timeout.tv_usec = (timeoutMs % 1000) * 1000;
+			connected = select(0, nullptr, &writeSet, &errorSet, &timeout) > 0 && FD_ISSET(socket, &writeSet);
+		}
+
+		u_long blocking = 0;
+		ioctlsocket(socket, FIONBIO, &blocking);
+		return connected;
+	}
+
+	size_t ReadTcpPayloadLength(const std::vector<char>& data)
+	{
+		return (size_t((unsigned char)data[0]) << 24) | (size_t((unsigned char)data[1]) << 16) |
+		       (size_t((unsigned char)data[2]) << 8) | size_t((unsigned char)data[3]);
+	}
+}
+
+bool EnsureWinsock()
+{
+	static const bool started = [] {
+		WSADATA wsadata;
+		const int error = WSAStartup(MAKEWORD(2, 2), &wsadata);
+		if (error) {
+			_MESSAGE("WSAStartup failed: %d", error);
+		}
+		return error == 0;
+	}();
+	return started;
+}
 
 TPLinkHelper::TPLinkHelper(bool enableLogging)
 {
 	m_loggingEnabled = enableLogging;
-	m_ip = NULL;
 	m_port = 0;
 	m_udp = false;
-	m_wsaStarted = false;
+}
+
+TPLinkHelper::~TPLinkHelper()
+{
+	CloseConnection();
 }
 
 bool TPLinkHelper::ConnectToHost(int PortNo, const char* IPAddress)
 {
-	std::string logMsg("ConnectToHost called ");
-	logMsg.append(std::to_string(PortNo));
-	logMsg.append(IPAddress);
-	//_MESSAGE(logMsg.c_str());
 	m_port = PortNo;
-	m_ip = IPAddress;
+	m_sIp = IPAddress ? IPAddress : "";
 	bool canConnect = OpenConnection();
-	// also clean up after a failed attempt, otherwise the socket and winsock stay open
 	CloseConnection();
 	return canConnect;
 }
 
 bool TPLinkHelper::OpenConnection()
 {
-	//_MESSAGE("OpenConnection called");
-	//_MESSAGE(m_ip);
+	CloseConnection();
 
-	//Start up Winsock…
-	WSADATA wsadata;
-
-	int error = WSAStartup(MAKEWORD(2, 2), &wsadata);
-
-	//Did something happen? TODO: log
-	if (error)
-		return false;
-	m_wsaStarted = true;
-
-	//Did we get the right Winsock version?
-	if (false)//(wsadata.wVersion != 0x0202)
-	{
-		WSACleanup(); //Clean up Winsock
+	if (!EnsureWinsock()) {
 		return false;
 	}
 
-	//Fill out the information needed to initialize a socket…
-	SOCKADDR_IN target; //Socket address information
+	sockaddr_in target{};
+	target.sin_family = AF_INET;
+	target.sin_port = htons((u_short)m_port);
+	if (inet_pton(AF_INET, m_sIp.c_str(), &target.sin_addr) != 1) {
+		if (m_loggingEnabled) {
+			_MESSAGE("invalid ip: %s", m_sIp.c_str());
+		}
+		return false;
+	}
 
-	target.sin_family = AF_INET; // address family Internet
-	target.sin_port = htons(m_port); //Port to connect on
-	//target.sin_addr.s_addr = inet_addr(m_ip); //Target IP
-	inet_pton(AF_INET, m_ip, &target.sin_addr);
+	ConnectSocket = m_udp ? socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP) : socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (ConnectSocket == INVALID_SOCKET) {
+		_MESSAGE("socket creation failed: %d", WSAGetLastError());
+		return false;
+	}
+
+	DWORD timeout = RECEIVE_TIMEOUT_MS;
+	setsockopt(ConnectSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
 
 	if (m_udp) {
-		ConnectSocket = socket(AF_INET, SOCK_DGRAM, 0);
-		if (ConnectSocket == INVALID_SOCKET)
-		{
-			return false; // error
-		}
-
-		struct sockaddr_in Recv_addr;
-		Recv_addr.sin_family = AF_INET;
-		Recv_addr.sin_port = htons(9999);
-		//Recv_addr.sin_addr.s_addr = inet_addr(m_ip);
-		inet_pton(AF_INET, m_ip, &Recv_addr.sin_addr);
-
-		int timeout = 3000;
-		setsockopt(ConnectSocket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(int));
-
-		//if (bind(ConnectSocket, (sockaddr*)&Recv_addr, sizeof(Recv_addr)) < 0)
-		//{
-		//	closesocket(ConnectSocket);
-		//	return false; // error
-		//}
-		return true;
+		// for udp this only sets the default destination, so send/recv work the same for both protocols
+		return connect(ConnectSocket, (const sockaddr*)&target, sizeof(target)) == 0;
 	}
-	else {
-		ConnectSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP); //Create socket
-		if (ConnectSocket == INVALID_SOCKET)
-		{
-			_MESSAGE("socket creation failed");
-			return false; //Couldn't create the socket
-		}
-
-		//Try connecting...
-
-		if (connect(ConnectSocket, (SOCKADDR *)&target, sizeof(target)) == SOCKET_ERROR)
-		{
-			return false; //Couldn't connect
-		}
-		else
-			return true; //Success
-	}
+	return ConnectWithTimeout(ConnectSocket, target, CONNECT_TIMEOUT_MS);
 }
 
-//CLOSECONNECTION – shuts down the socket and closes any connection on it
 void TPLinkHelper::CloseConnection()
 {
-	//_MESSAGE("CloseConnection called");
-	//Close the socket if it exists
 	if (ConnectSocket != INVALID_SOCKET) {
 		closesocket(ConnectSocket);
 		ConnectSocket = INVALID_SOCKET;
-	}
-
-	if (m_wsaStarted) {
-		WSACleanup(); //Clean up Winsock
-		m_wsaStarted = false;
 	}
 }
 
@@ -127,7 +132,6 @@ bool TPLinkHelper::LoadIPConfigFromFile(int &useUDP, std::string &defaultIp)
 		m_udp = (useUDP > 0);
 		m_port = 9999;
 		m_sIp = defaultIp;
-		m_ip = (char*)m_sIp.c_str();
 	}
 	else
 	{
@@ -138,7 +142,6 @@ bool TPLinkHelper::LoadIPConfigFromFile(int &useUDP, std::string &defaultIp)
 			_MESSAGE("%s", sExecPath.c_str());
 			_MESSAGE("file not found");
 			std::ofstream outfile(sExecPath);
-			//outfile << std::endl;
 			outfile.close();
 		}
 
@@ -147,219 +150,117 @@ bool TPLinkHelper::LoadIPConfigFromFile(int &useUDP, std::string &defaultIp)
 			iniFileBuffer, 100, sExecPath.c_str());
 		defaultIp = iniFileBuffer;
 		m_sIp = defaultIp;
-		std::cout << m_sIp;
-		//_MESSAGE(m_sIp.c_str());
 
 		useUDP = GetPrivateProfileIntA("GeneralModConfig", "bUseUdp", 0, sExecPath.c_str());
 		m_udp = (useUDP > 0);
 
-		std::cout << m_sIp;
-		//_MESSAGE(m_sIp.c_str());
-
 		m_port = 9999;
-		m_ip = (char*)m_sIp.c_str();
-		//_MESSAGE(m_ip);
 	}
 	return m_sIp != "";
 }
 
 
-int TPLinkHelper::SendAndReceiveEncoded(std::string messageSend, std::string& messageAnswer)
+int TPLinkHelper::SendAndReceiveEncoded(const std::string &messageSend, std::string &messageAnswer)
 {
-	//_MESSAGE("SendAndReceiveEncoded called");
-	//std::cout << "going to send\n";
-	int answerLengthInternal;
-	std::vector<char> vMsgSend(messageSend.begin(), messageSend.end());
-	if (m_udp) {
-		vMsgSend = EncryptMessage(vMsgSend, Enumerations::ProtocolType_UDP);
-		if (m_loggingEnabled) {
-			_MESSAGE("using udp");
-		}
-	}
-	else {
-		vMsgSend = EncryptMessage(vMsgSend, Enumerations::ProtocolType_TCP);
-		if (m_loggingEnabled) {
-			_MESSAGE("using tcp");
-		}
+	messageAnswer.clear();
+
+	const int protocolType = m_udp ? Enumerations::ProtocolType_UDP : Enumerations::ProtocolType_TCP;
+	if (m_loggingEnabled) {
+		_MESSAGE(m_udp ? "using udp" : "using tcp");
 	}
 
-	std::string sMsgSend(vMsgSend.begin(), vMsgSend.end());
-	//_MESSAGE(sMsgSend.c_str());
-	answerLengthInternal = DEFAULT_BUFLEN;
-	char buf[DEFAULT_BUFLEN];
-	int code = SendAndReceive(sMsgSend.c_str(), sMsgSend.size(), buf, answerLengthInternal);
-	if (code) {
+	std::vector<char> response;
+	if (SendAndReceive(EncryptMessage(std::vector<char>(messageSend.begin(), messageSend.end()), protocolType), response)) {
 		_MESSAGE("unsuccessful");
-	}
-	if (code || answerLengthInternal <= 0) {
-		// return if unsuccessful, buf contains no valid data then
-		messageAnswer.clear();
 		return 1;
 	}
-	/*std::string log = "answer length: ";
-	log.append(std::to_string(answerLengthInternal));
-	_MESSAGE(log.c_str());*/
-	std::string sbuf(buf, answerLengthInternal);
-	//std::cout << "rec sbuf " << sbuf << "\n";
-	std::vector<char> vMsgReceive(sbuf.begin(), sbuf.end());
-	if (m_udp) {
-		vMsgReceive = DecryptMessage(vMsgReceive, Enumerations::ProtocolType_UDP);
-	}
-	else {
-		vMsgReceive = DecryptMessage(vMsgReceive, Enumerations::ProtocolType_TCP);
-	}
-	messageAnswer = std::string(vMsgReceive.begin(), vMsgReceive.end());
-	size_t endOfMsg = messageAnswer.rfind('\0');
-	//printf("endOfMsg: %ld\n", endOfMsg);
-	if (endOfMsg != -1) {
-		messageAnswer.resize(endOfMsg);
-	}
-	//std::cout << "rec msg " << messageAnswer << "\n";
+
+	std::vector<char> decrypted = DecryptMessage(response, protocolType);
+	messageAnswer.assign(decrypted.begin(), decrypted.end());
 	return 0;
 }
 
-int TPLinkHelper::SendAndReceive(const char *sendbuf, int sendLen, char* recvbuf, int &recvbuflen)
+bool TPLinkHelper::SendAll(const std::vector<char> &request)
 {
-	//_MESSAGE("SendAndReceive called");
-	const int capacity = recvbuflen;
-	recvbuflen = 0;
-	bool couldOpenConnection = OpenConnection();
-	if (!couldOpenConnection) {
-		std::string log = "Could not connect ";
-		if (m_ip == NULL) {
-			log.append("null");
+	size_t sent = 0;
+	while (sent < request.size()) {
+		const int result = send(ConnectSocket, request.data() + sent, (int)(request.size() - sent), 0);
+		if (result == SOCKET_ERROR) {
+			return false;
 		}
-		else {
-			log.append(m_ip);
+		sent += result;
+		if (m_udp) {
+			break; // a datagram is sent completely or not at all
 		}
-		//_MESSAGE(log.c_str());
+	}
+	return true;
+}
+
+int TPLinkHelper::SendAndReceive(const std::vector<char> &request, std::vector<char> &response)
+{
+	response.clear();
+
+	if (!OpenConnection()) {
+		if (m_loggingEnabled) {
+			_MESSAGE("Could not connect to %s", m_sIp.c_str());
+		}
 		CloseConnection();
 		return 1;
 	}
-	else {
-		std::string log = "Could connect ";
-		if (m_ip == NULL) {
-			log.append("null");
-		}
-		else {
-			log.append(m_ip);
-		}
-		//_MESSAGE(log.c_str());
+
+	if (!SendAll(request)) {
+		_MESSAGE("send failed: %d", WSAGetLastError());
+		CloseConnection();
+		return 1;
 	}
-	if (ConnectSocket != INVALID_SOCKET) {
 
-		int iResult;
-		if (m_udp) {
-			struct sockaddr_in Sender_addr;
-			Sender_addr.sin_family = AF_INET;
-			Sender_addr.sin_port = htons(9999);
-			Sender_addr.sin_addr.s_addr = inet_addr(m_ip);
-
-			if (sendto(ConnectSocket, sendbuf, sendLen, 0, (sockaddr *)&Sender_addr, sizeof(Sender_addr)) < 0)
-			{
-				CloseConnection();
-				return 1;// error
-			}
+	char buffer[DEFAULT_BUFLEN];
+	bool complete = false;
+	if (m_udp) {
+		// one datagram is the whole answer, waiting for more only ran into the receive timeout
+		const int received = recv(ConnectSocket, buffer, sizeof(buffer), 0);
+		if (received > 0) {
+			response.assign(buffer, buffer + received);
+			complete = true;
 		}
-		else {
-
-			// Send an initial buffer
-			iResult = send(ConnectSocket, sendbuf, sendLen, 0); //(int)strlen(sendbuf)
-			if (iResult == SOCKET_ERROR) {
-				printf("send failed: %d\n", WSAGetLastError());
-				CloseConnection();
-				return 1;
-			}
-			printf("Bytes Sent: %ld\n", iResult);
-		}		
-		//_MESSAGE("sent message successfully.");
-
-		//ReceiveOnce(ConnectSocket, recvbuf);
-
-
-		// shutdown the connection for sending since no more data will be sent
-		// the client can still use the ConnectSocket for receiving data
-		iResult = shutdown(ConnectSocket, SD_SEND);
-		if (iResult == SOCKET_ERROR) {
-			//_MESSAGE("shutdown failed");
-			printf("shutdown failed: %d\n", WSAGetLastError());
-			CloseConnection();
-			return 1;
+		else if (m_loggingEnabled) {
+			_MESSAGE("recv wsa error result: %d", WSAGetLastError());
 		}
+	}
+	else {
+		// signal the end of the request, older firmware may wait for it
+		shutdown(ConnectSocket, SD_SEND);
 
-		// Receive data until the server closes the connection or the buffer is full
-		int total = 0;
-		do {
-			if (m_udp) {
-				struct sockaddr_in Recv_addr;
-				socklen_t addrlen = sizeof(struct sockaddr_in);
-				iResult = recvfrom(ConnectSocket, recvbuf + total, capacity - total, 0, (struct sockaddr *)&Recv_addr, &addrlen);
-			}
-			else {
-				iResult = recv(ConnectSocket, recvbuf + total, capacity - total, 0);
-			}
-			if (iResult > 0)
-			{
-				total += iResult;
-				printf("Bytes received: %d\n", iResult);
-			}
-			else if (iResult == 0)
-			{
-				_MESSAGE("connection closed by server");
-			}
-			else
-			{
-				if (m_loggingEnabled) {
-					std::string error("recv wsa error result: ");
-					error.append(std::to_string(WSAGetLastError()));
-					_MESSAGE("%s", error.c_str());
+		// read until the length announced in the header has arrived
+		size_t expectedLength = 0;
+		while (!complete && response.size() < MAX_RESPONSE_LENGTH) {
+			const int received = recv(ConnectSocket, buffer, sizeof(buffer), 0);
+			if (received <= 0) {
+				if (received < 0 && m_loggingEnabled) {
+					_MESSAGE("recv wsa error result: %d", WSAGetLastError());
 				}
+				break;
 			}
-		} while (iResult > 0 && total < capacity);
-		recvbuflen = total;
-		if (total > 0) {
-			if (m_loggingEnabled) {
-				_MESSAGE("got an answer. ");
+			response.insert(response.end(), buffer, buffer + received);
+			if (expectedLength == 0 && response.size() >= TCP_HEADER_LENGTH) {
+				expectedLength = TCP_HEADER_LENGTH + ReadTcpPayloadLength(response);
 			}
+			complete = expectedLength != 0 && response.size() >= expectedLength;
 		}
-	}
-	else {
-		std::string log = "Socket is invalid! Couldn't send message.";
-		//_MESSAGE(log.c_str());
+		if (complete) {
+			response.resize(expectedLength);
+		}
 	}
 	CloseConnection();
 
-	return 0;
-}
-
-int TPLinkHelper::ReceiveOnce(int s, char * buf)
-{
-	int n = recv(s, buf, DEFAULT_BUFLEN, 0);
-	return n;
-}
-
-int TPLinkHelper::ReceiveAll(int s, char *buf, int *len)
-{
-	//_MESSAGE("ReceiveAll called");
-	int total = 0;        // how many bytes we've received
-	int bytesleft = *len; // how many we have left to receive
-	int n = -1;
-	int counter = 0;
-
-	while (total < *len) {
-		if (counter <= 100) {
-			break; // break while loop
-		}
-		n = recv(s, buf + total, bytesleft, 0);
-		if (n <= 0) { break; }
-		total += n;
-		bytesleft -= n;
-		counter++;
+	if (!complete) {
+		response.clear();
+		return 1;
 	}
-
-	*len = total; // return number actually received here
-
-	return (n <= 0) ? -1 : 0; // return -1 on failure, 0 on success
+	if (m_loggingEnabled) {
+		_MESSAGE("got an answer. ");
+	}
+	return 0;
 }
 
 /// <summary>
@@ -375,13 +276,14 @@ std::vector<char> TPLinkHelper::EncryptMessage(std::vector<char> pMessage, int p
 
 	if ((pMessage.size() > 0))
 	{
-		// Add prefix of the message
+		// Add the length of the message as prefix (4 bytes, big endian)
 		if (pProtocolType == Enumerations::ProtocolType_TCP)
 		{
-			mBuffer.push_back(0x00);
-			mBuffer.push_back(0x00);
-			mBuffer.push_back(0x00);
-			mBuffer.push_back(0x00);
+			const size_t length = pMessage.size();
+			mBuffer.push_back((char)((length >> 24) & 0xFF));
+			mBuffer.push_back((char)((length >> 16) & 0xFF));
+			mBuffer.push_back((char)((length >> 8) & 0xFF));
+			mBuffer.push_back((char)(length & 0xFF));
 		}
 
 		// Encode the message
@@ -423,20 +325,11 @@ std::vector<char> TPLinkHelper::DecryptMessage(std::vector<char> pMessage, int p
 	return mBuffer;
 }
 
-void TPLinkHelper::SwitchRelayState(long on)
+bool TPLinkHelper::SwitchRelayState(long on)
 {
-	//_MESSAGE("SwitchRelayState called");
 	std::string result = "";
-	if (on == 1) {
-		std::string msg = "{\"system\":{\"set_relay_state\":{\"state\":1}}}";
-		SendAndReceiveEncoded(msg, result);
-		//_MESSAGE(result.c_str());
-	}
-	else {
-		std::string msg = "{\"system\":{\"set_relay_state\":{\"state\":0}}}";
-		SendAndReceiveEncoded(msg, result);
-		//_MESSAGE(result.c_str());
-	}
+	const std::string msg = (on == 1) ? "{\"system\":{\"set_relay_state\":{\"state\":1}}}" : "{\"system\":{\"set_relay_state\":{\"state\":0}}}";
+	return SendAndReceiveEncoded(msg, result) == 0;
 }
 
 void TPLinkHelper::SwitchLEDState(long on)

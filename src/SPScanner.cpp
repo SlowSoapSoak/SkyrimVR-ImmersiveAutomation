@@ -1,25 +1,90 @@
 #include "SPScanner.h"
 #include <string>
-#include <stdio.h>
-#include <iostream>
 #include "TPLinkSPHelper.h"
 #include "Enumerations.h"
 #include "DeviceInfo.h"
 
-#ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0600
-#endif
-
-#include <stdio.h>
 #include <winsock2.h>
 #include <iphlpapi.h>
 #include <ws2tcpip.h>
 
-#include <thread>
-#include <future>
-
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "iphlpapi.lib")
+
+namespace
+{
+	// how long to wait for further answers on one network interface
+	const DWORD SCAN_RECEIVE_TIMEOUT_MS = 3000;
+
+	std::string ToString(const in_addr& address)
+	{
+		char text[INET_ADDRSTRLEN] = {};
+		inet_ntop(AF_INET, &address, text, sizeof(text));
+		return text;
+	}
+
+	// Broadcasts get_sysinfo on one interface and returns the ip of the plug named plugName, or "".
+	std::string ScanInterface(const NetworkInterfaceInfo& networkInterface, const std::vector<char>& request, const std::string& plugName)
+	{
+		SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+		if (sock == INVALID_SOCKET)
+		{
+			_MESSAGE("socket creation failed: %d", WSAGetLastError());
+			return "";
+		}
+
+		BOOL enabled = TRUE;
+		setsockopt(sock, SOL_SOCKET, SO_BROADCAST, (const char*)&enabled, sizeof(enabled));
+		DWORD timeout = SCAN_RECEIVE_TIMEOUT_MS;
+		setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+
+		// bind to the address of this interface (any free port), so the broadcast leaves through this adapter.
+		// Port 9999 is not needed for the answers and may be taken by another program.
+		sockaddr_in localAddress{};
+		localAddress.sin_family = AF_INET;
+		localAddress.sin_port = 0;
+		sockaddr_in broadcastAddress{};
+		broadcastAddress.sin_family = AF_INET;
+		broadcastAddress.sin_port = htons(9999);
+		if (inet_pton(AF_INET, networkInterface.Ip.c_str(), &localAddress.sin_addr) != 1
+			|| inet_pton(AF_INET, networkInterface.Broadcast.c_str(), &broadcastAddress.sin_addr) != 1
+			|| bind(sock, (const sockaddr*)&localAddress, sizeof(localAddress)) == SOCKET_ERROR
+			|| sendto(sock, request.data(), (int)request.size(), 0, (const sockaddr*)&broadcastAddress, sizeof(broadcastAddress)) == SOCKET_ERROR)
+		{
+			_MESSAGE("broadcast on %s failed: %d", networkInterface.Ip.c_str(), WSAGetLastError());
+			closesocket(sock);
+			return "";
+		}
+
+		// receive answers until the timeout, other smart devices may answer as well
+		char buf[DEFAULT_BUFLEN];
+		while (true)
+		{
+			sockaddr_in sourceAddress{};
+			int addressLength = sizeof(sourceAddress);
+			const int received = recvfrom(sock, buf, sizeof(buf), 0, (sockaddr*)&sourceAddress, &addressLength);
+			if (received <= 0)
+			{
+				break;
+			}
+
+			std::vector<char> answer = TPLinkHelper::DecryptMessage(std::vector<char>(buf, buf + received), Enumerations::ProtocolType_UDP);
+			const std::string recvMsg(answer.begin(), answer.end());
+			_MESSAGE("Received from %s: %s", ToString(sourceAddress.sin_addr).c_str(), recvMsg.c_str());
+
+			DeviceInfo info;
+			info.LoadFromJson(recvMsg);
+			if (info.alias() == plugName)
+			{
+				closesocket(sock);
+				return ToString(sourceAddress.sin_addr);
+			}
+		}
+
+		closesocket(sock);
+		return "";
+	}
+}
 
 
 SPScanner::SPScanner()
@@ -31,163 +96,84 @@ SPScanner::~SPScanner()
 {
 }
 
-//std::string listenForUDPAnswers(std::string plugName) {
-//	
-//	return "";
-//}
-
 std::string SPScanner::ScanForTpPlug(std::string plugName)
 {
-	std::string returnIP;
-
-	WSAData d;
-	if (WSAStartup(MAKEWORD(2, 2), &d) != 0) {
+	if (!EnsureWinsock()) {
 		return "";
 	}
 
-	std::string broadCastMsg = "{\"system\":{\"get_sysinfo\":{}}}";
-
-	std::vector<char> vBroadCastMsg(broadCastMsg.begin(), broadCastMsg.end());
-	vBroadCastMsg = TPLinkHelper::EncryptMessage(vBroadCastMsg, Enumerations::ProtocolType_UDP);
-	std::string broadCastMsgEnc = std::string(vBroadCastMsg.begin(), vBroadCastMsg.end());
+	const std::string broadCastMsg = "{\"system\":{\"get_sysinfo\":{}}}";
+	const std::vector<char> request = TPLinkHelper::EncryptMessage(std::vector<char>(broadCastMsg.begin(), broadCastMsg.end()), Enumerations::ProtocolType_UDP);
 
 	std::vector<NetworkInterfaceInfo> interfaces;
 	GetNetworkInterfaceInfos(interfaces);
 
-	//std::future<std::string> ret = std::async(&listenForUDPAnswers, plugName);
-	
-	for (int k = 0; k < interfaces.size(); k++) 
+	// an interface that fails (e.g. a disconnected vpn) must not stop the scan of the others
+	for (const NetworkInterfaceInfo& networkInterface : interfaces)
 	{
-		SOCKET sock = socket(AF_INET, SOCK_DGRAM, 0);
-		if (sock == INVALID_SOCKET)
+		const std::string ip = ScanInterface(networkInterface, request, plugName);
+		if (!ip.empty())
 		{
-			return ""; // error
+			return ip;
 		}
-
-		BOOL enabled = TRUE;
-		if (setsockopt(sock, SOL_SOCKET, SO_BROADCAST, (char*)&enabled, sizeof(BOOL)) < 0)
-		{
-			closesocket(sock);
-			return ""; // error
-		}
-
-		struct sockaddr_in Sender_addr;
-		Sender_addr.sin_family = AF_INET;
-		Sender_addr.sin_port = htons(9999);
-		//Sender_addr.sin_addr.s_addr = inet_addr(interfaces.at(k).Broadcast.c_str());
-		inet_pton(AF_INET, interfaces.at(k).Broadcast.c_str(), &Sender_addr.sin_addr);
-
-		struct sockaddr_in Recv_addr;
-		Recv_addr.sin_family = AF_INET;
-		Recv_addr.sin_port = htons(9999);
-		Recv_addr.sin_addr.s_addr = INADDR_ANY;
-
-		if (bind(sock, (sockaddr*)&Recv_addr, sizeof(Recv_addr)) < 0)
-		{
-			closesocket(sock);
-			return ""; // error
-		}
-
-		int timeout = 3000;
-		setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
-		if (sendto(sock, broadCastMsgEnc.c_str(), broadCastMsgEnc.length(), 0, (sockaddr *)&Sender_addr, sizeof(Sender_addr)) < 0)
-		{
-			closesocket(sock);
-			return "";// error
-		}
-
-		// Receive data until timeout
-		int iResult = 0;
-		int total = 0;
-		struct sockaddr_in srcaddr;
-		do {
-			char buf[4096];
-			//recv(sock, buf, 4096, 0);
-			socklen_t addrlen = sizeof(struct sockaddr_in);
-
-			iResult = recvfrom(sock, buf, 4096, 0, (struct sockaddr *)&srcaddr, &addrlen);
-			_MESSAGE("start receive");
-			if (iResult > 0)
-			{
-				sockaddr addr;
-				int len2 = sizeof(addr);
-				getpeername(sock, &addr, &len2);
-
-				total += iResult;
-				printf("Bytes received: %d\n", iResult);
-				_MESSAGE("Bytes received");
-				std::string recvMsg(buf, iResult); // buf is not null terminated
-				std::vector<char> vBroadCastAnswer(recvMsg.begin(), recvMsg.end());
-				vBroadCastAnswer = TPLinkHelper::DecryptMessage(vBroadCastAnswer, Enumerations::ProtocolType_UDP);
-				recvMsg = std::string(vBroadCastAnswer.begin(), vBroadCastAnswer.end());
-				recvMsg.resize(recvMsg.length());
-				size_t endOfMsg = recvMsg.rfind('\0');
-				//printf("endOfMsg: %ld\n", endOfMsg);
-				if (endOfMsg != -1) {
-					recvMsg.resize(endOfMsg);
-				}
-				//std::cout << "rebound: " << recvMsg << "\n";
-				_MESSAGE("Received: %s", recvMsg.c_str());
-				if (recvMsg.find("\"get_sysinfo\":{}") != std::string::npos) {
-					// ignore rebound
-					//_MESSAGE("ignore rebound");
-				}
-				else if (recvMsg.find("{") != std::string::npos) {
-					_MESSAGE("json message?");
-					DeviceInfo info;
-					//recvMsg.resize(550);
-					info.LoadFromJson(recvMsg);
-					if (info.alias() == plugName)
-					{
-						returnIP = inet_ntoa(srcaddr.sin_addr);
-						closesocket(sock);
-						WSACleanup();
-						return returnIP;
-					}
-				}
-			}
-			else if (iResult == 0)
-				printf("Connection closed\n");
-			else
-				printf("recv failed: %d\n", WSAGetLastError());
-		} while (iResult > 0);
-
-		closesocket(sock);
 	}
-	//returnIP = ret.get();
-
-	WSACleanup();
 	return "";
 }
 
 int SPScanner::GetNetworkInterfaceInfos(std::vector<NetworkInterfaceInfo> & results)
 {
-	ULONG bufSz = 0;
-	if (GetAdaptersInfo(NULL, &bufSz) == ERROR_BUFFER_OVERFLOW)
+	const ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+	ULONG bufSz = 16 * 1024;
+	std::vector<BYTE> buf;
+	ULONG result = ERROR_BUFFER_OVERFLOW;
+	// the adapter list can grow between the calls, so retry a few times with the size windows asks for
+	for (int attempt = 0; attempt < 3 && result == ERROR_BUFFER_OVERFLOW; attempt++)
 	{
-		std::vector<BYTE> buf;
-		buf.resize(bufSz, 0);
-		if (GetAdaptersInfo((IP_ADAPTER_INFO*)&buf[0], &bufSz) == ERROR_SUCCESS)
+		buf.resize(bufSz);
+		result = GetAdaptersAddresses(AF_INET, flags, nullptr, (IP_ADAPTER_ADDRESSES*)buf.data(), &bufSz);
+	}
+	if (result != NO_ERROR)
+	{
+		_MESSAGE("GetAdaptersAddresses failed: %lu", result);
+		return 0;
+	}
+
+	for (IP_ADAPTER_ADDRESSES* adapter = (IP_ADAPTER_ADDRESSES*)buf.data(); adapter != nullptr; adapter = adapter->Next)
+	{
+		// adapters that are down or loopback can not reach the plug, each one would only add a receive timeout to the scan
+		if (adapter->OperStatus != IfOperStatusUp || adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK)
 		{
-			IP_ADAPTER_INFO* pAdapterInfo = (IP_ADAPTER_INFO*)&buf[0];
-			for (; pAdapterInfo != NULL; pAdapterInfo = pAdapterInfo->Next)
+			continue;
+		}
+
+		for (IP_ADAPTER_UNICAST_ADDRESS* address = adapter->FirstUnicastAddress; address != nullptr; address = address->Next)
+		{
+			if (address->Address.lpSockaddr->sa_family != AF_INET)
 			{
-				NetworkInterfaceInfo info;
-				unsigned long ip = inet_addr(pAdapterInfo->IpAddressList.IpAddress.String);
-				unsigned long mask = inet_addr(pAdapterInfo->IpAddressList.IpMask.String);
-				unsigned long bcip = ip | ~mask;
-				struct in_addr ia;
-				ia.S_un.S_addr = bcip;
-				info.Ip = pAdapterInfo->IpAddressList.IpAddress.String;
-				info.NetMask = pAdapterInfo->IpAddressList.IpMask.String;
-				info.Broadcast = inet_ntoa(ia);
-				_MESSAGE("\nFound adapter:");
-				_MESSAGE("%s", info.Ip.c_str());
-				_MESSAGE("%s", info.NetMask.c_str());
-				_MESSAGE("%s", info.Broadcast.c_str());
-				results.push_back(info);
+				continue;
 			}
+			// /31 and /32 (e.g. vpn tunnels) have no broadcast address
+			const ULONG prefixLength = address->OnLinkPrefixLength;
+			if (prefixLength == 0 || prefixLength > 30)
+			{
+				continue;
+			}
+
+			const in_addr ip = ((const sockaddr_in*)address->Address.lpSockaddr)->sin_addr;
+			ULONG mask = 0;
+			ConvertLengthToIpv4Mask(prefixLength, &mask);
+			in_addr netMask{};
+			netMask.s_addr = mask;
+			in_addr broadcast{};
+			broadcast.s_addr = ip.s_addr | ~mask;
+
+			NetworkInterfaceInfo info;
+			info.Ip = ToString(ip);
+			info.NetMask = ToString(netMask);
+			info.Broadcast = ToString(broadcast);
+			_MESSAGE("Found adapter: %s, mask %s, broadcast %s", info.Ip.c_str(), info.NetMask.c_str(), info.Broadcast.c_str());
+			results.push_back(info);
 		}
 	}
-	return 0;
+	return (int)results.size();
 }

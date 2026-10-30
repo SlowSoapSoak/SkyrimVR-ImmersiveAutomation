@@ -100,8 +100,8 @@ namespace ImmersiveWinds {
 	void SendRelayState(long on)
 	{
 		TPLinkHelper tpLinkConn(_logsEnabled);
-		if (LoadConnectionConfig(tpLinkConn)) {
-			tpLinkConn.SwitchRelayState(on);
+		if (LoadConnectionConfig(tpLinkConn) && !tpLinkConn.SwitchRelayState(on)) {
+			LOG("Switching the plug %s failed", on ? "on" : "off");
 		}
 		_lastRelaySend = std::chrono::steady_clock::now();
 	}

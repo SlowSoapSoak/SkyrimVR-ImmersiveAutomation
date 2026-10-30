@@ -1,98 +1,74 @@
 #include "DeviceInfo.h"
-#include <vector>
-#include <iostream>
-#include <stdio.h>
+#include <nlohmann/json.hpp>
 
-DeviceInfo::DeviceInfo()
+namespace
+{
+	std::string GetString(const nlohmann::json& object, const char* key)
+	{
+		const auto it = object.find(key);
+		return (it != object.end() && it->is_string()) ? it->get<std::string>() : std::string();
+	}
+
+	long GetNumber(const nlohmann::json& object, const char* key)
+	{
+		const auto it = object.find(key);
+		return (it != object.end() && it->is_number()) ? it->get<long>() : 0;
+	}
+}
+
+DeviceInfo::DeviceInfo() :
+	m_ErrorCode(0), m_RelayState(0), m_OnTime(0), m_Updating(0), m_RSSI(0), m_LedOffState(0), m_Latitude(0), m_Longitude(0)
 {
 }
 
+// Reads the answer to {"system":{"get_sysinfo":{}}}. Invalid json leaves all values empty.
 void DeviceInfo::LoadFromJson(std::string json)
 {
-	std::string msg = "LoadFromJson with: ";
-	msg.append(json);
-	_MESSAGE("%s", msg.c_str());
+	_MESSAGE("LoadFromJson with: %s", json.c_str());
 
-	std::vector<std::string> valueKeys;
-	/*valueKeys.push_back("\"sw_ver\":");
-	valueKeys.push_back("\"hw_ver\":");
-	valueKeys.push_back("\"type\":");
-	valueKeys.push_back("\"model\":");*/
-	valueKeys.push_back("\"alias\":");
-	/*valueKeys.push_back("\"mac\":");
-	valueKeys.push_back("\"deviceId\":");
-	valueKeys.push_back("\"hwId\":");
-	valueKeys.push_back("\"fwId\":");
-	valueKeys.push_back("\"oemId\":");
-	valueKeys.push_back("\"dev_name\":");
-	valueKeys.push_back("\"icon_hash\":");
-	valueKeys.push_back("\"relay_state\":");
-	valueKeys.push_back("\"on_time\":");
-	valueKeys.push_back("\"active_mode\":");
-	valueKeys.push_back("\"feature\":");
-	valueKeys.push_back("\"updating\":");
-	valueKeys.push_back("\"rssi\":");
-	valueKeys.push_back("\"led_off\":");*/
-	//valueKeys.push_back("\"latitude\":");
-	//valueKeys.push_back("\"longitude\":");
-	for (int i = 0; i < valueKeys.size(); i++) {
-		size_t value_sep = json.find(valueKeys.at(i));
-		size_t line_sep = json.find(',', value_sep);
-		if (value_sep == std::string::npos || line_sep == std::string::npos) {
-			continue;
-		}
-		std::string jsonvalue = json.substr(value_sep + valueKeys.at(i).length(), line_sep - (value_sep + valueKeys.at(i).length()));
-		_MESSAGE("%s", jsonvalue.c_str());
-		
-		if (valueKeys.at(i) == "\"sw_ver\":") {
-			m_SoftwareVersion = jsonvalue.substr(1, jsonvalue.length() - 2); 
-		}
-		else if (valueKeys.at(i) == "\"hw_ver\":") {
-			m_HardwareVersion = jsonvalue.substr(1, jsonvalue.length() - 2);
-			//std::cout << m_HardwareVersion << "\n";
-		}
-		else if (valueKeys.at(i) == "\"type\":") {
-			m_HardwareVersion = jsonvalue.substr(1, jsonvalue.length() - 2);
-			//std::cout << m_HardwareVersion << "\n";
-		}
-		else if (valueKeys.at(i) == "\"model\":") {
-			m_Model = jsonvalue.substr(1, jsonvalue.length() - 2);
-			//std::cout << m_Model << "\n";
-		}
-		else if (valueKeys.at(i) == "\"alias\":") {
-			m_Alias = jsonvalue.substr(1, jsonvalue.length() - 2);
-			_MESSAGE("found alias:");
-			_MESSAGE("%s", m_Alias.c_str());
-		}
+	const nlohmann::json root = nlohmann::json::parse(json, nullptr, false);
+	if (root.is_discarded() || !root.is_object()) {
+		_MESSAGE("no valid json");
+		return;
 	}
+	const auto system = root.find("system");
+	if (system == root.end() || !system->is_object()) {
+		return;
+	}
+	const auto sysinfoIt = system->find("get_sysinfo");
+	if (sysinfoIt == system->end() || !sysinfoIt->is_object()) {
+		return;
+	}
+	const nlohmann::json& sysinfo = *sysinfoIt;
 
+	m_ErrorCode = GetNumber(sysinfo, "err_code");
+	m_ErrorMessage = GetString(sysinfo, "err_msg");
+	m_SoftwareVersion = GetString(sysinfo, "sw_ver");
+	m_HardwareVersion = GetString(sysinfo, "hw_ver");
+	m_DeviceType = GetString(sysinfo, "type");
+	if (m_DeviceType.empty()) {
+		m_DeviceType = GetString(sysinfo, "mic_type");
+	}
+	m_Model = GetString(sysinfo, "model");
+	m_MAC = GetString(sysinfo, "mac");
+	m_ID = GetString(sysinfo, "deviceId");
+	m_HardwareID = GetString(sysinfo, "hwId");
+	m_FirmwareID = GetString(sysinfo, "fwId");
+	m_OEMID = GetString(sysinfo, "oemId");
+	m_Alias = GetString(sysinfo, "alias");
+	m_DeviceName = GetString(sysinfo, "dev_name");
+	m_IconHash = GetString(sysinfo, "icon_hash");
+	m_RelayState = (char)GetNumber(sysinfo, "relay_state");
+	m_OnTime = GetNumber(sysinfo, "on_time");
+	m_ActiveMode = GetString(sysinfo, "active_mode");
+	m_Feature = GetString(sysinfo, "feature");
+	m_Updating = GetNumber(sysinfo, "updating");
+	m_RSSI = GetNumber(sysinfo, "rssi");
+	m_LedOffState = (char)GetNumber(sysinfo, "led_off");
+	m_Latitude = GetNumber(sysinfo, "latitude");
+	m_Longitude = GetNumber(sysinfo, "longitude");
 
-	/*internal void LoadFromJson(JToken pJson)
-	{
-	this.ErrorCode = pJson["err_code"].Value<int>();
-	this.ErrorMessage = (this.ErrorCode != 0) ? pJson["err_msg"].Value<string>() : "";
-	this.SoftwareVersion = (this.ErrorCode == 0) ? pJson["sw_ver"].Value<string>() : "";
-	this.HardwareVersion = (this.ErrorCode == 0) ? pJson["hw_ver"].Value<string>() : "";
-	this.DeviceType = (this.ErrorCode == 0) ? pJson["type"].Value<string>() : "";
-	this.Model = (this.ErrorCode == 0) ? pJson["model"].Value<string>() : "";
-	this.MAC = (this.ErrorCode == 0) ? pJson["mac"].Value<string>() : "";
-	this.ID = (this.ErrorCode == 0) ? pJson["deviceId"].Value<string>() : "";
-	this.HardwareID = (this.ErrorCode == 0) ? pJson["hwId"].Value<string>() : "";
-	this.FirmwareID = (this.ErrorCode == 0) ? pJson["fwId"].Value<string>() : "";
-	this.OEMID = (this.ErrorCode == 0) ? pJson["oemId"].Value<string>() : "";
-	this.Alias = (this.ErrorCode == 0) ? pJson["alias"].Value<string>() : "";
-	this.DeviceName = (this.ErrorCode == 0) ? pJson["dev_name"].Value<string>() : "";
-	this.IconHash = (this.ErrorCode == 0) ? pJson["icon_hash"].Value<string>() : "";
-	this.RelayState = (this.ErrorCode == 0) ? pJson["relay_state"].Value<byte>() : (byte)0;
-	this.OnTime = (this.ErrorCode == 0) ? pJson["on_time"].Value<long>() : 0;
-	this.ActiveMode = (this.ErrorCode == 0) ? pJson["active_mode"].Value<string>() : "";
-	this.Feature = (this.ErrorCode == 0) ? pJson["feature"].Value<string>() : "";
-	this.Updating = (this.ErrorCode == 0) ? pJson["updating"].Value<long>() : 0;
-	this.RSSI = (this.ErrorCode == 0) ? pJson["rssi"].Value<long>() : 0;
-	this.LedOffState = (this.ErrorCode == 0) ? pJson["led_off"].Value<byte>() : (byte)0;
-	this.Latitude = (this.ErrorCode == 0) ? pJson["latitude"].Value<long>() : 0;
-	this.Longitude = (this.ErrorCode == 0) ? pJson["longitude"].Value<long>() : 0;
-	}*/
+	_MESSAGE("found alias: %s", m_Alias.c_str());
 }
 
 int DeviceInfo::errorCode() const

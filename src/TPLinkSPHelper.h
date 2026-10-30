@@ -1,12 +1,16 @@
 #pragma once
 #include <vector>
+#include <string>
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include <stdio.h>
 #include "DeviceInfo.h"
 
 
 #define DEFAULT_BUFLEN 4096
+
+// Starts Winsock once for the whole process. It stays loaded until the game exits,
+// starting and stopping it for every message only added overhead.
+bool EnsureWinsock();
 
 class TPLinkHelper
 {
@@ -14,15 +18,18 @@ private:
 	SOCKET ConnectSocket = INVALID_SOCKET;
 
 	std::string m_sIp;
-	const char* m_ip;
 	int m_port;
 	bool m_udp;
 	bool m_loggingEnabled;
-	bool m_wsaStarted;
 
 public:
 
 	TPLinkHelper(bool enableLogging);
+	~TPLinkHelper();
+
+	// owns a socket, copies would close it twice
+	TPLinkHelper(const TPLinkHelper&) = delete;
+	TPLinkHelper& operator=(const TPLinkHelper&) = delete;
 
 	bool ConnectToHost(int PortNo, const char * IPAddress);
 
@@ -32,7 +39,7 @@ public:
 	bool LoadIPConfigFromFile(int &useUDP, std::string &defaultIp);
 
 
-	void SwitchRelayState(long on);
+	bool SwitchRelayState(long on);
 
 	void SwitchLEDState(long on);
 
@@ -44,11 +51,10 @@ public:
 	static std::vector<char> DecryptMessage(std::vector<char> pMessage, int pProtocolType);
 
 private:
-	int SendAndReceiveEncoded(std::string messageSend, std::string &messageAnswer);
+	int SendAndReceiveEncoded(const std::string &messageSend, std::string &messageAnswer);
 
-	int SendAndReceive(const char *sendbuf, int sendLen, char* recvbufR, int &recvbuflen);
+	int SendAndReceive(const std::vector<char> &request, std::vector<char> &response);
 
-	int ReceiveOnce(int s, char *buf);
-	int ReceiveAll(int s, char *buf, int *len);
+	bool SendAll(const std::vector<char> &request);
 
 };
