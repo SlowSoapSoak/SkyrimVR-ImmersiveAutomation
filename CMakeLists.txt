@@ -56,11 +56,15 @@ immersive_plugin_settings(ImmersiveHeat)
 # Deploy the built DLL straight into the game: cmake -DSKYRIM_DATA_DIR=".../Data"
 set(SKYRIM_DATA_DIR "" CACHE PATH "Skyrim Data folder to copy the plugin into after each build")
 if(SKYRIM_DATA_DIR)
+	foreach(plugin ${PROJECT_NAME} ImmersiveHeat)
+		add_custom_command(
+			TARGET ${plugin} POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E make_directory "${SKYRIM_DATA_DIR}/SKSE/Plugins"
+			COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${plugin}> $<TARGET_PDB_FILE:${plugin}> "${SKYRIM_DATA_DIR}/SKSE/Plugins"
+		)
+	endforeach()
 	add_custom_command(
 		TARGET ${PROJECT_NAME} POST_BUILD
-		COMMAND ${CMAKE_COMMAND} -E make_directory "${SKYRIM_DATA_DIR}/SKSE/Plugins"
-		COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${PROJECT_NAME}> $<TARGET_PDB_FILE:${PROJECT_NAME}> "${SKYRIM_DATA_DIR}/SKSE/Plugins"
-		COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:ImmersiveHeat> $<TARGET_PDB_FILE:ImmersiveHeat> "${SKYRIM_DATA_DIR}/SKSE/Plugins"
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/Winds/ImmersiveWindsVR.esp" "${SKYRIM_DATA_DIR}"
 	)
 endif()

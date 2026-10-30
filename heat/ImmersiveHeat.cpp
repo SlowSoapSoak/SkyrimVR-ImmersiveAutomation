@@ -66,17 +66,21 @@ namespace ImmersiveHeat {
 			// direct sunlight: outside, at day, bright sun and the player standing in the light
 			bool sunlight = true;
 			float minSunGlare = 0.4f;     // 0-1
-			float minLightLevel = 138.0f; // light level at the player (Actor.GetLightLevel), 0 disables the check
+			float minLightLevel = 180.0f; // light level at the player (Actor.GetLightLevel), 0 disables the check
 			// sunlight stays on until the light level drops this much below minLightLevel, so the plug does not
 			// flicker at the edge of a shadow
 			float lightLevelHysteresis = 4.0f;
+			// the light level includes fire light, so next to a fire it takes this much more to count as sunlight
+			float fireLightMargin = 40.0f;
 			float dayStartHour = 7.2f;
 			float dayEndHour = 17.76f;
 
 			// fire nearby: a reference whose model path contains one of fireModels (and none of fireModelsExclude)
 			bool nearFire = true;
 			float fireRadius = 350.0f;    // game units, about 5 m
+			float smallFireRadius = 100.0f; // candles and torches only count this close
 			std::vector<std::string> fireModels;
+			std::vector<std::string> smallFireModels;
 			std::vector<std::string> fireModelsExclude;
 
 			// fire attacks: hit by fire, burning (fire damage effects on the player), casting own fire spells
@@ -89,7 +93,8 @@ namespace ImmersiveHeat {
 		};
 
 		const char * DEFAULT_FIRE_MODELS = "fire,flame,brazier,forge,smelter,lava,embers,hearth";
-		const char * DEFAULT_FIRE_MODELS_EXCLUDE = "firewood,fireplace,nofire,unlit";
+		const char * DEFAULT_SMALL_FIRE_MODELS = "candle,chandel,sconce,torch";
+		const char * DEFAULT_FIRE_MODELS_EXCLUDE = "firewood,fireplace,nofire,unlit,off,nocandle,candlehearth,signage,firefly,spit,cookingstand,underforge,wrskyforge,fireweapon,trap,forgebase";
 
 		Settings _settings;
 
@@ -123,7 +128,15 @@ namespace ImmersiveHeat {
 
 		RE::BGSKeyword * keywordLocSetOutdoor = nullptr;
 		// model check results per base form, only used on the main thread
-		std::unordered_map<RE::FormID, bool> _fireModelCache;
+		enum class FireSize
+		{
+			kNone,
+			kSmall,
+			kLarge
+		};
+
+		std::unordered_map<RE::FormID, FireSize> _fireModelCache;
+		float _lightLevel = 0.0f; // last light level at the player, for the log
 		// last logged heat state, to log only changes
 		std::string _lastReason;
 		// main thread only: result of the last fire search and of the last sunlight check (for the hysteresis)
@@ -268,7 +281,10 @@ namespace ImmersiveHeat {
 		WriteIniIfMissing(INI_HEAT, "fDayStartHour", std::to_string(defaults.dayStartHour), path);
 		WriteIniIfMissing(INI_HEAT, "fDayEndHour", std::to_string(defaults.dayEndHour), path);
 		WriteIniIfMissing(INI_HEAT, "bNearFire", "1", path);
+		WriteIniIfMissing(INI_HEAT, "fFireLightMargin", std::to_string(defaults.fireLightMargin), path);
 		WriteIniIfMissing(INI_HEAT, "fFireRadius", std::to_string(defaults.fireRadius), path);
+		WriteIniIfMissing(INI_HEAT, "fSmallFireRadius", std::to_string(defaults.smallFireRadius), path);
+		WriteIniIfMissing(INI_HEAT, "sSmallFireModels", DEFAULT_SMALL_FIRE_MODELS, path);
 		WriteIniIfMissing(INI_HEAT, "sFireModels", DEFAULT_FIRE_MODELS, path);
 		WriteIniIfMissing(INI_HEAT, "sFireModelsExclude", DEFAULT_FIRE_MODELS_EXCLUDE, path);
 		WriteIniIfMissing(INI_HEAT, "bFireHits", "1", path);
@@ -316,7 +332,10 @@ namespace ImmersiveHeat {
 		s.dayStartHour = ReadIniFloat(INI_HEAT, "fDayStartHour", defaults.dayStartHour, path);
 		s.dayEndHour = ReadIniFloat(INI_HEAT, "fDayEndHour", defaults.dayEndHour, path);
 		s.nearFire = ReadIniBool(INI_HEAT, "bNearFire", defaults.nearFire, path) && s.fireSwitch != 0;
+		s.fireLightMargin = std::max(0.0f, ReadIniFloat(INI_HEAT, "fFireLightMargin", defaults.fireLightMargin, path));
 		s.fireRadius = ReadIniFloat(INI_HEAT, "fFireRadius", defaults.fireRadius, path);
+		s.smallFireRadius = ReadIniFloat(INI_HEAT, "fSmallFireRadius", defaults.smallFireRadius, path);
+		s.smallFireModels = SplitLowerList(ReadIniString(INI_HEAT, "sSmallFireModels", DEFAULT_SMALL_FIRE_MODELS, path));
 		s.fireModels = SplitLowerList(ReadIniString(INI_HEAT, "sFireModels", DEFAULT_FIRE_MODELS, path));
 		s.fireModelsExclude = SplitLowerList(ReadIniString(INI_HEAT, "sFireModelsExclude", DEFAULT_FIRE_MODELS_EXCLUDE, path));
 		s.fireHits = ReadIniBool(INI_HEAT, "bFireHits", defaults.fireHits, path) && s.fireSwitch != 0;
@@ -471,30 +490,37 @@ namespace ImmersiveHeat {
 		return false;
 	}
 
-	bool IsFireModel(RE::TESBoundObject * base)
+	FireSize GetFireSize(RE::TESBoundObject * base)
 	{
 		if (!base) {
-			return false;
+			return FireSize::kNone;
 		}
 		const auto cached = _fireModelCache.find(base->GetFormID());
 		if (cached != _fireModelCache.end()) {
 			return cached->second;
 		}
 
-		bool fire = false;
-		if (auto model = base->As<RE::TESModel>()) {
+		FireSize size = FireSize::kNone;
+		auto model = base->As<RE::TESModel>();
+		if (model && !base->IsInventoryObject()) { // a potion of fire resistance is no fire
 			const char * path = model->GetModel();
 			const std::string lower = ToLower(path ? path : "");
 			const auto contains = [&lower](const std::string & word) { return lower.find(word) != std::string::npos; };
-			fire = !lower.empty()
-				&& std::any_of(_settings.fireModels.begin(), _settings.fireModels.end(), contains)
-				&& std::none_of(_settings.fireModelsExclude.begin(), _settings.fireModelsExclude.end(), contains);
-			if (fire) {
-				Log("Fire model: %s (%08X)", path, base->GetFormID());
+			const auto containsAny = [&contains](const std::vector<std::string> & words) { return std::any_of(words.begin(), words.end(), contains); };
+			if (!lower.empty() && !containsAny(_settings.fireModelsExclude)) {
+				if (containsAny(_settings.smallFireModels)) {
+					size = FireSize::kSmall;
+				}
+				else if (containsAny(_settings.fireModels)) {
+					size = FireSize::kLarge;
+				}
+			}
+			if (size != FireSize::kNone) {
+				Log("Fire model (%s): %s (%08X)", size == FireSize::kSmall ? "small" : "large", path, base->GetFormID());
 			}
 		}
-		_fireModelCache[base->GetFormID()] = fire;
-		return fire;
+		_fireModelCache[base->GetFormID()] = size;
+		return size;
 	}
 
 	bool IsNearFire(RE::PlayerCharacter * player)
@@ -504,10 +530,15 @@ namespace ImmersiveHeat {
 			return false;
 		}
 		bool found = false;
-		tes->ForEachReferenceInRange(player, _settings.fireRadius, [&](RE::TESObjectREFR * ref) {
-			if (ref && ref != player && !ref->IsDisabled() && ref->Is3DLoaded() && IsFireModel(ref->GetBaseObject())) {
-				found = true;
-				return RE::BSContainer::ForEachResult::kStop;
+		const auto playerPosition = player->GetPosition();
+		tes->ForEachReferenceInRange(player, std::max(_settings.fireRadius, _settings.smallFireRadius), [&](RE::TESObjectREFR * ref) {
+			if (ref && ref != player && !ref->IsDisabled() && ref->Is3DLoaded()) {
+				const FireSize size = GetFireSize(ref->GetBaseObject());
+				const float distance = playerPosition.GetDistance(ref->GetPosition());
+				if ((size == FireSize::kLarge && distance <= _settings.fireRadius) || (size == FireSize::kSmall && distance <= _settings.smallFireRadius)) {
+					found = true;
+					return RE::BSContainer::ForEachResult::kStop;
+				}
 			}
 			return RE::BSContainer::ForEachResult::kContinue;
 		});
@@ -552,7 +583,7 @@ namespace ImmersiveHeat {
 		return false;
 	}
 
-	bool IsInSunlight(RE::PlayerCharacter * player)
+	bool IsInSunlight(RE::PlayerCharacter * player, bool nearFire)
 	{
 		auto sky = RE::Sky::GetSingleton();
 		auto cell = player->GetParentCell();
@@ -573,7 +604,8 @@ namespace ImmersiveHeat {
 		const float lightLevel = high ? high->lightLevel : 0.0f;
 
 		// once in the sun, it takes a slightly lower light level to count as shadow again
-		const float minLightLevel = _inSunlight ? _settings.minLightLevel - _settings.lightLevelHysteresis : _settings.minLightLevel;
+		const float minLightLevel = _settings.minLightLevel + (nearFire ? _settings.fireLightMargin : 0.0f) - (_inSunlight ? _settings.lightLevelHysteresis : 0.0f);
+		_lightLevel = lightLevel;
 
 		return hour > _settings.dayStartHour && hour < _settings.dayEndHour
 			&& sunGlare > _settings.minSunGlare
@@ -606,14 +638,15 @@ namespace ImmersiveHeat {
 			&& !(_settings.noHeatInMenu && RE::UI::GetSingleton() && RE::UI::GetSingleton()->GameIsPaused());
 
 		// checked every time so the hysteresis always knows the last sunlight state
-		_inSunlight = playing && _settings.sunlight && IsInSunlight(player);
+		const bool nearFire = playing && (_settings.nearFire || _settings.sunlight) && IsNearFireCached(player);
+		_inSunlight = playing && _settings.sunlight && IsInSunlight(player, nearFire);
 		const std::string fireReason = playing ? FireReason(player) : "";
 
 		SetHeat(_inSunlight, !fireReason.empty());
 
 		const std::string reason = std::string(_inSunlight ? "sunlight" : "") + (_inSunlight && !fireReason.empty() ? ", " : "") + fireReason;
 		if (reason != _lastReason) {
-			Log("Heat: %s", reason.empty() ? "none" : reason.c_str());
+			Log("Heat: %s (light level %.0f)", reason.empty() ? "none" : reason.c_str(), _lightLevel);
 			_lastReason = reason;
 		}
 	}
