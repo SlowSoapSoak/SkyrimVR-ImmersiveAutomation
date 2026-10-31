@@ -48,7 +48,7 @@ Missing keys are added with their default value, existing values are never overw
 | `sHomeAssistantUrl` | | address of Home Assistant, see [Home Assistant](#home-assistant). Replaces `sSwitchType` and the http settings |
 | `sPlugName` | `ImmersiveWindsPlug` | TP-Link: name of the plug in the Kasa app |
 | `bUseUdp` | `1` | TP-Link: send the commands with udp (`1`) or tcp (`0`) |
-| `iWindMode` | `0` | `0`: levels 0-6 (below). `1`: simulated wind, see [Simulated wind](#simulated-wind-iwindmode1) |
+| `iWindMode` | `1` | `1`: simulated wind, see [Simulated wind](#simulated-wind-iwindmode1). `0`: levels 0-6 (below) |
 | `bIntermittentModeEnabled` | `1` | `iWindMode=0` only. `1`: levels 0-6 with on/off patterns. `0`: simple mode, fan on outside, off inside |
 | `bNoWindInMenu` | `0` | `1`: fan off while a menu pauses the game |
 | `bLoggingEnabled` | `0` | detailed log |

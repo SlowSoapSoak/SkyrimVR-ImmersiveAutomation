@@ -113,7 +113,7 @@ namespace ImmersiveWinds {
 			{ INI_GENERAL, "bIntermittentModeEnabled", 1, nullptr },
 			{ INI_GENERAL, "bLoggingEnabled", 0, nullptr },
 			{ INI_GENERAL, "bNoWindInMenu", 0, nullptr },
-			{ INI_GENERAL, "iWindMode", 0, nullptr },
+			{ INI_GENERAL, "iWindMode", 1, nullptr },
 			{ INI_SIM, "bWriteCsv", 0, nullptr },
 		};
 
