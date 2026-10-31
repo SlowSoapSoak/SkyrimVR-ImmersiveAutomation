@@ -615,8 +615,12 @@ namespace ImmersiveHeat {
 			return;
 		}
 		const auto & timing = sky->currentClimate->timing;
-		const float sunUp = timing.sunrise.end / 6.0f; // the climate counts in steps of 10 minutes
-		const float sunDown = timing.sunset.begin / 6.0f;
+		// the climate counts in steps of 10 minutes. Vanilla sunrise is 5:30 to 10:00, sunset 16:00 to 20:30:
+		// this share of each gives the hours found by testing in vanilla, about 7:12 to 17:46
+		const float DAY_TRANSITION_SHARE = 0.385f;
+		const auto hourInTransition = [&](const auto & interval) { return (interval.begin + DAY_TRANSITION_SHARE * (interval.end - interval.begin)) / 6.0f; };
+		const float sunUp = hourInTransition(timing.sunrise);
+		const float sunDown = hourInTransition(timing.sunset);
 		if (sunUp < sunDown) {
 			start = sunUp;
 			end = sunDown;

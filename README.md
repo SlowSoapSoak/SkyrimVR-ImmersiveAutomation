@@ -182,7 +182,7 @@ Upgrading from the test builds of *Immersive Sun*: delete `ImmersiveSunPluginScr
 | | `sFireModels` | `fire,flame,brazier,forge,smelter,lava,embers,hearth` |
 | | `sFireModelsExclude` | unlit fires and things that only sound like fire, see the ini. Inventory items never count. |
 | | `bSunlight`, `fMinSunGlare`, `fMinLightLevel` | `1`, `0.4` (0-1), `180` (`0` disables the light check) |
-| | `bClimateDayHours` | `1`: day hours of the current climate, the log shows them when the climate changes |
+| | `bClimateDayHours` | `1`: day hours of the current climate, 38.5 % into its sunrise and sunset (vanilla: about 7:14 to 17:44). The log shows them when the climate changes |
 | | `fDayStartHour`, `fDayEndHour` | `7.2`, `17.76` (used with `bClimateDayHours=0` or without a climate) |
 | | `fFireLightMargin` | `40`: the light level includes fire light, so within the fire radius it has to be this much higher to count as sunlight |
 | | `fLightLevelHysteresis` | `4`: in the sun, the light level has to drop this much below `fMinLightLevel` to count as shadow, so the plug does not flicker at the edge of a shadow |
