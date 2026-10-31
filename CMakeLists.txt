@@ -29,7 +29,7 @@ endfunction()
 # Immersive Winds: fan control
 add_commonlibsse_plugin(
 	${PROJECT_NAME}
-	AUTHOR "shizof"
+	AUTHOR "madrum"
 	SOURCES ${sources}
 )
 immersive_plugin_settings(${PROJECT_NAME})
@@ -47,7 +47,7 @@ set(shared_sources
 )
 add_commonlibsse_plugin(
 	ImmersiveHeat
-	AUTHOR "shizof"
+	AUTHOR "madrum"
 	VERSION 1.1.0
 	SOURCES ${heat_sources} ${shared_sources}
 )
