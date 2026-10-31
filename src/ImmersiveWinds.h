@@ -6,7 +6,7 @@
 
 namespace ImmersiveWinds
 {
-	const std::string MOD_VERSION = "1.5.0";
+	const std::string MOD_VERSION = "1.6.0";
 
 	void Log(const int msgLogLevel, const char * fmt, ...);
 

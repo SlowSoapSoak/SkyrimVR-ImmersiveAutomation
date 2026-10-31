@@ -88,9 +88,16 @@ The level is the base value of the place plus the modifiers, at most 6. The shou
 | `iHighAltitudeBegin` / `iVeryHighAltitudeBegin` | `4000` / `18000` | height in game units |
 | `bAutoStormWeathers` | `1` | rain and snow weathers with a wind speed of at least `fStormMinWindSpeed` count as storm |
 | `fStormMinWindSpeed` | `0.5` | wind speed of the weather, 0-1 |
+| `bShelterDetection` | `1` | outside, but inside a building without a load screen (towers, ruins): counts as sheltered, see below |
+| `iShelteredBase` | `1` | level when sheltered, no outside modifiers |
+| `iShelterMinWalls` | `6` | of 8 directions around the player that have to hit a wall |
+| `iShelterWallDistance` | `800` | how far the walls may be, game units (about 11 m) |
+| `iShelterRoofHeight` | `3000` | how high the roof may be, game units |
 | `sStormWeathers` | vanilla storms, True Storms, Vivid Weathers, Mythical Ages | weathers that are always storm, see below |
 
 **Weather mods** (Cathedral, Obsidian, Azurite, NAT, Vivid, Dolomite, True Storms, ...) bring their own weathers. The plugin reads the weather itself, not its id: its type (pleasant, cloudy, rain, snow), sun glare and wind speed. So their weathers work without a list, and `bAutoStormWeathers` recognizes their storms by rain or snow plus strong wind. The simulated wind follows the wind speed of any weather anyway. During a weather transition the previous weather counts until the transition is half done, so the fan does not start the storm while the sky is still clear. With `bLoggingEnabled=1` the log shows the id of every weather, its type, and `(storm)` for storms; a weather the automatic detection misses can be added to `sStormWeathers`, one that it should not count can be excluded by raising `fStormMinWindSpeed`.
+
+**Buildings without a load screen**: some towers and ruins are part of the outside world, the game reports no interior there. Every 3 seconds the plugin casts rays through the collision of the world from the chest of the player, one up and eight around. A roof within `iShelterRoofHeight` plus walls in at least `iShelterMinWalls` directions within `iShelterWallDistance` count as sheltered: the level is `iShelteredBase` (simulated wind: `iShelteredBase` / 6, plus the motion wind) instead of the outside level. An open door or window leaves one or two directions free, which still counts. With `bLoggingEnabled=1` the log shows the roof and the number of walls of every check and `(sheltered)`; under a bridge or a rock overhang it may count as sheltered too, `iShelterMinWalls` decides how closed the place has to be.
 
 Wind mods that only change the animation of grass and trees (INI wind settings, SMP wind) do not change the weathers and need nothing.
 
