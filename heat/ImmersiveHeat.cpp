@@ -140,6 +140,8 @@ namespace ImmersiveHeat {
 
 		std::unordered_map<RE::FormID, FireSize> _fireModelCache;
 		float _lightLevel = 0.0f; // last light level at the player, for the log
+		// result of the last switch command for the message in the game: 0 unknown, 1 worked, -1 failed
+		std::atomic<int> _switchResult(0);
 		// last logged heat state, to log only changes
 		std::string _lastReason;
 		// main thread only: result of the last fire search and of the last sunlight check (for the hysteresis)
@@ -261,6 +263,7 @@ namespace ImmersiveHeat {
 			WritePrivateProfileStringA(INI_INTERNAL, "sModVersion", MOD_VERSION.c_str(), path.c_str());
 		}
 
+		WriteIniIfMissing(INI_GENERAL, "sHomeAssistantUrl", "", path);
 		WriteIniIfMissing(INI_GENERAL, "bUseUdp", "1", path);
 		WriteIniIfMissing(INI_GENERAL, "bLoggingEnabled", "0", path);
 		WriteIniIfMissing(INI_GENERAL, "bNoHeatInMenu", "1", path);
@@ -316,6 +319,7 @@ namespace ImmersiveHeat {
 		s.logging = ReadIniBool(INI_GENERAL, "bLoggingEnabled", defaults.logging, path);
 		s.noHeatInMenu = ReadIniBool(INI_GENERAL, "bNoHeatInMenu", defaults.noHeatInMenu, path);
 
+		const std::string homeAssistant = Trim(ReadIniString(INI_GENERAL, "sHomeAssistantUrl", "", path));
 		for (int i = 0; i < SWITCH_COUNT; i++) {
 			const std::string section = SwitchSection(i);
 			SwitchSettings & sw = s.switches[i];
@@ -324,6 +328,13 @@ namespace ImmersiveHeat {
 			sw.httpMethod = Trim(ReadIniString(section.c_str(), "sHttpMethod", "GET", path));
 			sw.onUrl = Trim(ReadIniString(section.c_str(), "sOnUrl", "", path));
 			sw.offUrl = Trim(ReadIniString(section.c_str(), "sOffUrl", "", path));
+			if (!homeAssistant.empty()) {
+				const std::string webhook = "ImmersiveHeat" + std::to_string(i + 1);
+				sw.http = true;
+				sw.httpMethod = "POST";
+				sw.onUrl = HttpSwitch::HomeAssistantUrl(homeAssistant, webhook, true);
+				sw.offUrl = HttpSwitch::HomeAssistantUrl(homeAssistant, webhook, false);
+			}
 		}
 
 		s.sunSwitch = ReadSwitchNumber("iSunSwitch", defaults.sunSwitch, path);
@@ -390,11 +401,16 @@ namespace ImmersiveHeat {
 	bool SwitchPlug(int index, bool on)
 	{
 		const SwitchSettings & sw = _settings.switches[index];
+		bool worked = false;
 		if (sw.http) {
-			return HttpSwitch::Request(sw.httpMethod, on ? sw.onUrl : sw.offUrl, _settings.logging);
+			worked = HttpSwitch::Request(sw.httpMethod, on ? sw.onUrl : sw.offUrl, _settings.logging);
 		}
-		TPLinkHelper tpLinkConn(_settings.logging);
-		return LoadConnectionConfig(index, tpLinkConn) && tpLinkConn.SwitchRelayState(on ? 1 : 0);
+		else {
+			TPLinkHelper tpLinkConn(_settings.logging);
+			worked = LoadConnectionConfig(index, tpLinkConn) && tpLinkConn.SwitchRelayState(on ? 1 : 0);
+		}
+		_switchResult = worked ? 1 : -1;
+		return worked;
 	}
 
 	void SetWanted(int index, bool on)
@@ -682,6 +698,18 @@ namespace ImmersiveHeat {
 		return "";
 	}
 
+	// Tells the player once per game start if the switch works, so nobody has to read the log for that.
+	void ShowSwitchResult()
+	{
+		static bool shown = false;
+		const int result = _switchResult;
+		if (shown || result == 0) {
+			return;
+		}
+		shown = true;
+		RE::SendHUDMessage::ShowHUDMessage(result > 0 ? "Immersive Heat: connected" : "Immersive Heat: no connection, see the log");
+	}
+
 	// Reads the heat sources and sets the switches. Calls into the engine, so it must run on the game's main thread.
 	void UpdateFromGameState()
 	{
@@ -690,6 +718,9 @@ namespace ImmersiveHeat {
 			&& !(_settings.noHeatInMenu && RE::UI::GetSingleton() && RE::UI::GetSingleton()->GameIsPaused());
 
 		// checked every time so the hysteresis always knows the last sunlight state
+		if (player && player->Is3DLoaded()) {
+			ShowSwitchResult();
+		}
 		const bool nearFire = playing && (_settings.nearFire || _settings.sunlight) && IsNearFireCached(player);
 		_inSunlight = playing && _settings.sunlight && IsInSunlight(player, nearFire);
 		const std::string fireReason = playing ? FireReason(player) : "";

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 
 project(
 	ImmersiveWindsPluginScript
-	VERSION 1.3.0
+	VERSION 1.5.0
 	LANGUAGES CXX
 )
 
@@ -48,7 +48,7 @@ set(shared_sources
 add_commonlibsse_plugin(
 	ImmersiveHeat
 	AUTHOR "shizof"
-	VERSION 1.0.0
+	VERSION 1.1.0
 	SOURCES ${heat_sources} ${shared_sources}
 )
 immersive_plugin_settings(ImmersiveHeat)
