@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -96,6 +97,11 @@ namespace ImmersiveWinds {
 		int iOutsideAltitudeHighMod = 0;
 		int iOutsideAltitudeVeryHighMod = 0;
 		int bAutoStormWeathers = 0;
+		int bShelterDetection = 0;
+		int iShelteredBase = 0;
+		int iShelterMinWalls = 0;
+		int iShelterWallDistance = 0;
+		int iShelterRoofHeight = 0;
 
 		struct IntSetting
 		{
@@ -169,6 +175,11 @@ namespace ImmersiveWinds {
 			{ INI_LEVELS, "iHighAltitudeBegin", 4000, &iHighAltitudeBegin },
 			{ INI_LEVELS, "iVeryHighAltitudeBegin", 18000, &iVeryHighAltitudeBegin },
 			{ INI_LEVELS, "bAutoStormWeathers", 1, &bAutoStormWeathers },
+			{ INI_LEVELS, "bShelterDetection", 1, &bShelterDetection },
+			{ INI_LEVELS, "iShelteredBase", 1, &iShelteredBase },
+			{ INI_LEVELS, "iShelterMinWalls", 6, &iShelterMinWalls },
+			{ INI_LEVELS, "iShelterWallDistance", 800, &iShelterWallDistance },
+			{ INI_LEVELS, "iShelterRoofHeight", 3000, &iShelterRoofHeight },
 		};
 
 		// rain and snow weathers with at least this wind speed (0-1) count as storm, see IsStormWeather
@@ -259,6 +270,8 @@ namespace ImmersiveWinds {
 
 		// last values read from the game
 		bool _internalCell = false;
+		// outside, but under a roof and between walls (towers and ruins without a load screen), see IsSheltered
+		bool _sheltered = false;
 		float _altitude = 0;
 		long _weatherClass = 0;
 		BGSLocation * _currentLocation = nullptr;
@@ -746,6 +759,9 @@ namespace ImmersiveWinds {
 				}
 			}
 		}
+		else if (_sheltered) {
+			resultingLevel = iShelteredBase;
+		}
 		else {
 			resultingLevel = iOutsideBase;
 
@@ -802,7 +818,7 @@ namespace ImmersiveWinds {
 
 		if (_simulatedWind) {
 			// inside the level of the location, outside the wind of the weather in the game
-			float wind = _internalCell
+			float wind = (_internalCell || _sheltered)
 				? static_cast<float>(resultingLevel) / MAX_LEVEL
 				: _outsideMinWind + _gameWindScale * _gameWindSpeed + static_cast<float>(altitudeMod) / MAX_LEVEL;
 			if (_shoutLevel == 1) {
@@ -816,11 +832,12 @@ namespace ImmersiveWinds {
 		}
 	}
 
-	void UpdateNativeWindState(bool internalCell, float altitude, long weatherClass, BGSLocation* curLocation, float inGameTime, float sunglare, UInt32 weatherId, bool isStorm)
+	void UpdateNativeWindState(bool internalCell, bool sheltered, float altitude, long weatherClass, BGSLocation* curLocation, float inGameTime, float sunglare, UInt32 weatherId, bool isStorm)
 	{
-		LOG("\nUpdateNativeWindState called %d; %g; %ld; %g; %g; %08X%s", (internalCell ? 1 : 0), altitude, weatherClass, inGameTime, sunglare, weatherId, isStorm ? " (storm)" : "");
+		LOG("\nUpdateNativeWindState called %d; %g; %ld; %g; %g; %08X%s%s", (internalCell ? 1 : 0), altitude, weatherClass, inGameTime, sunglare, weatherId, isStorm ? " (storm)" : "", sheltered ? " (sheltered)" : "");
 
 		_internalCell = internalCell;
+		_sheltered = sheltered;
 		_altitude = altitude;
 		_weatherClass = weatherClass;
 		_currentLocation = curLocation;
@@ -940,6 +957,48 @@ namespace ImmersiveWinds {
 		}
 	}
 
+	// Whether a ray hits the collision of the world (walls, roofs, rocks, terrain). Main thread only.
+	bool RayHits(const RE::NiPoint3 & from, const RE::NiPoint3 & to)
+	{
+		auto tes = RE::TES::GetSingleton();
+		if (!tes) {
+			return false;
+		}
+		const float scale = RE::bhkWorld::GetWorldScale();
+		RE::bhkPickData pick;
+		pick.rayInput.from = RE::hkVector4(from.x * scale, from.y * scale, from.z * scale, 0.0f);
+		pick.rayInput.to = RE::hkVector4(to.x * scale, to.y * scale, to.z * scale, 0.0f);
+		// the line of sight layer: blocked by buildings, rocks and terrain, not by actors
+		pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kLOS);
+		tes->Pick(pick);
+		return pick.rayOutput.HasHit();
+	}
+
+	// Outside, but inside a building without a load screen (towers, ruins): the game does not tell, so rays are cast
+	// from the player: one up to find a roof and eight around to find walls.
+	bool IsSheltered(RE::PlayerCharacter * player)
+	{
+		const float CHEST_HEIGHT = 90.0f;
+		const RE::NiPoint3 chest = player->GetPosition() + RE::NiPoint3(0.0f, 0.0f, CHEST_HEIGHT);
+
+		const float roofHeight = static_cast<float>(iShelterRoofHeight);
+		const bool roof = RayHits(chest, chest + RE::NiPoint3(0.0f, 0.0f, roofHeight));
+
+		const float wallDistance = static_cast<float>(iShelterWallDistance);
+		int walls = 0;
+		const int DIRECTIONS = 8;
+		for (int i = 0; i < DIRECTIONS; i++) {
+			const float angle = i * 2.0f * RE::NI_PI / DIRECTIONS;
+			const RE::NiPoint3 to = chest + RE::NiPoint3(std::cos(angle) * wallDistance, std::sin(angle) * wallDistance, 0.0f);
+			if (RayHits(chest, to)) {
+				walls++;
+			}
+		}
+
+		LOG("Shelter: roof %s, walls %d of %d", roof ? "yes" : "no", walls, DIRECTIONS);
+		return roof && walls >= iShelterMinWalls;
+	}
+
 	// Reads the game state (player, cell, weather, shout effects) and updates the wind level.
 	// Calls into the engine, so it must run on the game's main thread (see WeatherCheck).
 	void UpdateFromGameState()
@@ -975,7 +1034,8 @@ namespace ImmersiveWinds {
 			// 0-1 (the weather records store 0-255, in case a game version keeps that scale)
 			_gameWindSpeed = skyPtr->windSpeed > 1.0f ? skyPtr->windSpeed / 255.0f : skyPtr->windSpeed;
 			const auto weather = GetVisibleWeather(skyPtr);
-			UpdateNativeWindState(isInterior, player->GetPosition().z, GetClassification(weather), player->GetCurrentLocation(), skyPtr->currentGameHour, GetSunGlare(weather), weather->GetFormID(), IsStormWeather(weather));
+			const bool sheltered = !isInterior && bShelterDetection && IsSheltered(player);
+			UpdateNativeWindState(isInterior, sheltered, player->GetPosition().z, GetClassification(weather), player->GetCurrentLocation(), skyPtr->currentGameHour, GetSunGlare(weather), weather->GetFormID(), IsStormWeather(weather));
 		}
 	}
 
