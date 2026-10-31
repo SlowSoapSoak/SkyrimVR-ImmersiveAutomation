@@ -1,0 +1,38 @@
+blueprint:
+  name: Immersive Winds / Immersive Heat
+  description: >-
+    Switches a device for the Skyrim mods Immersive Winds and Immersive Heat.
+    Create one automation per device, then set sHomeAssistantUrl in the ini of
+    the mod to the address of this Home Assistant.
+  domain: automation
+  source_url: https://github.com/SlowSoapSoak/SkyrimVR-ImmersiveAutomation/blob/master/homeassistant/immersive_switch.yaml
+  input:
+    source:
+      name: Mod
+      selector:
+        select:
+          options:
+            - label: Immersive Winds (fan)
+              value: ImmersiveWinds
+            - label: Immersive Heat (switch 1)
+              value: ImmersiveHeat1
+            - label: Immersive Heat (switch 2)
+              value: ImmersiveHeat2
+    device:
+      name: Device
+      description: The fan or heat lamp to switch.
+      selector:
+        target: {}
+
+mode: restart
+
+trigger:
+  - platform: webhook
+    webhook_id: !input source
+    allowed_methods:
+      - POST
+    local_only: true
+
+action:
+  - service: "homeassistant.turn_{{ 'on' if trigger.query.state == 'on' else 'off' }}"
+    target: !input device

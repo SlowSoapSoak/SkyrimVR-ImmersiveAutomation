@@ -77,6 +77,8 @@ namespace ImmersiveWinds {
 		std::string _httpMethod = "GET";
 		std::string _httpOnUrl;
 		std::string _httpOffUrl;
+		// result of the last switch command for the message in the game: 0 unknown, 1 worked, -1 failed
+		std::atomic<int> _switchResult(0);
 
 		// level config, set by LoadSettings
 		int iHighAltitudeBegin = 0;
@@ -111,7 +113,7 @@ namespace ImmersiveWinds {
 			{ INI_GENERAL, "bIntermittentModeEnabled", 1, nullptr },
 			{ INI_GENERAL, "bLoggingEnabled", 0, nullptr },
 			{ INI_GENERAL, "bNoWindInMenu", 0, nullptr },
-			{ INI_GENERAL, "iWindMode", 0, nullptr },
+			{ INI_GENERAL, "iWindMode", 1, nullptr },
 			{ INI_SIM, "bWriteCsv", 0, nullptr },
 		};
 
@@ -386,11 +388,16 @@ namespace ImmersiveWinds {
 
 	bool SwitchPlug(long on)
 	{
+		bool worked = false;
 		if (_useHttpSwitch) {
-			return HttpSwitch::Request(_httpMethod, on ? _httpOnUrl : _httpOffUrl, _logsEnabled);
+			worked = HttpSwitch::Request(_httpMethod, on ? _httpOnUrl : _httpOffUrl, _logsEnabled);
 		}
-		TPLinkHelper tpLinkConn(_logsEnabled);
-		return LoadConnectionConfig(tpLinkConn) && tpLinkConn.SwitchRelayState(on);
+		else {
+			TPLinkHelper tpLinkConn(_logsEnabled);
+			worked = LoadConnectionConfig(tpLinkConn) && tpLinkConn.SwitchRelayState(on);
+		}
+		_switchResult = worked ? 1 : -1;
+		return worked;
 	}
 
 	void SendRelayState(long on)
@@ -525,6 +532,7 @@ namespace ImmersiveWinds {
 		}
 		WriteIniIfMissing(INI_INTERNAL, "sTpLinkPlugIp", "", sExecPath);
 		WriteIniIfMissing(INI_GENERAL, "sSwitchType", "tplink", sExecPath);
+		WriteIniIfMissing(INI_GENERAL, "sHomeAssistantUrl", "", sExecPath);
 		WriteIniIfMissing(INI_GENERAL, "sPlugName", DEFAULT_PLUG_NAME, sExecPath);
 		WriteIniIfMissing(INI_HTTP, "sHttpMethod", "GET", sExecPath);
 		WriteIniIfMissing(INI_HTTP, "sOnUrl", "", sExecPath);
@@ -637,6 +645,13 @@ namespace ImmersiveWinds {
 		_httpMethod = Trim(ReadIniString(INI_HTTP, "sHttpMethod", "GET", sExecPath));
 		_httpOnUrl = Trim(ReadIniString(INI_HTTP, "sOnUrl", "", sExecPath));
 		_httpOffUrl = Trim(ReadIniString(INI_HTTP, "sOffUrl", "", sExecPath));
+		const std::string homeAssistant = Trim(ReadIniString(INI_GENERAL, "sHomeAssistantUrl", "", sExecPath));
+		if (!homeAssistant.empty()) {
+			_useHttpSwitch = true;
+			_httpMethod = "POST";
+			_httpOnUrl = HttpSwitch::HomeAssistantUrl(homeAssistant, "ImmersiveWinds", true);
+			_httpOffUrl = HttpSwitch::HomeAssistantUrl(homeAssistant, "ImmersiveWinds", false);
+		}
 		if (_useHttpSwitch) {
 			LOG_ERR("Using the http switch: %s %s / %s", _httpMethod.c_str(), _httpOnUrl.c_str(), _httpOffUrl.c_str());
 		}
@@ -940,6 +955,18 @@ namespace ImmersiveWinds {
 		}
 	}
 
+	// Tells the player once per game start if the switch works, so nobody has to read the log for that.
+	void ShowSwitchResult()
+	{
+		static bool shown = false;
+		const int result = _switchResult;
+		if (shown || result == 0) {
+			return;
+		}
+		shown = true;
+		RE::SendHUDMessage::ShowHUDMessage(result > 0 ? "Immersive Winds: connected" : "Immersive Winds: no connection, see the log");
+	}
+
 	// Reads the game state (player, cell, weather, shout effects) and updates the wind level.
 	// Calls into the engine, so it must run on the game's main thread (see WeatherCheck).
 	void UpdateFromGameState()
@@ -949,6 +976,7 @@ namespace ImmersiveWinds {
 		{
 			return;
 		}
+		ShowSwitchResult();
 
 		const auto cell = player->GetParentCell();
 		if (!cell)

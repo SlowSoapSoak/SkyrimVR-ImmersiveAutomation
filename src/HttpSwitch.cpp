@@ -34,6 +34,20 @@ namespace
 
 namespace HttpSwitch
 {
+	std::string HomeAssistantUrl(std::string address, const std::string & webhookId, bool on)
+	{
+		while (!address.empty() && address.back() == '/') {
+			address.pop_back();
+		}
+		if (address.find("://") == std::string::npos) {
+			address = "http://" + address;
+		}
+		if (address.find(':', address.find("://") + 3) == std::string::npos) {
+			address += ":8123";
+		}
+		return address + "/api/webhook/" + webhookId + (on ? "?state=on" : "?state=off");
+	}
+
 	bool Request(const std::string & method, const std::string & url, bool loggingEnabled)
 	{
 		if (url.empty()) {

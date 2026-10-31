@@ -20,6 +20,8 @@ Mod page: https://www.nexusmods.com/skyrimspecialedition/mods/18346
    http: see [Http switch](#http-switch).
 4. Start the game with `skse64_loader.exe` (VR: `sksevr_loader.exe`).
 
+After loading a save the game shows if the switch works (*Immersive Winds: connected*), so you see it without opening the log.
+
 On the first start the plugin writes all settings with their defaults to
 `Documents/My Games/<Skyrim Special Edition|Skyrim VR>/SKSE/immersiveWinds.ini`.
 The log is `ImmersiveWindsPluginScript.log` in the same folder (details with `bLoggingEnabled=1`).
@@ -43,9 +45,10 @@ Missing keys are added with their default value, existing values are never overw
 | Key | Default | |
 |---|---|---|
 | `sSwitchType` | `tplink` | `tplink` or `http` |
+| `sHomeAssistantUrl` | | address of Home Assistant, see [Home Assistant](#home-assistant). Replaces `sSwitchType` and the http settings |
 | `sPlugName` | `ImmersiveWindsPlug` | TP-Link: name of the plug in the Kasa app |
 | `bUseUdp` | `1` | TP-Link: send the commands with udp (`1`) or tcp (`0`) |
-| `iWindMode` | `0` | `0`: levels 0-6 (below). `1`: simulated wind, see [Simulated wind](#simulated-wind-iwindmode1) |
+| `iWindMode` | `1` | `1`: simulated wind, see [Simulated wind](#simulated-wind-iwindmode1). `0`: levels 0-6 (below) |
 | `bIntermittentModeEnabled` | `1` | `iWindMode=0` only. `1`: levels 0-6 with on/off patterns. `0`: simple mode, fan on outside, off inside |
 | `bNoWindInMenu` | `0` | `1`: fan off while a menu pauses the game |
 | `bLoggingEnabled` | `0` | detailed log |
@@ -137,6 +140,14 @@ The gusts are simulated by the plugin, the game has no gust values (tree movemen
 
 Tuning: start with the spin up and spin down times of your fan (switch it on and off and count). With `bLoggingEnabled=1` the log shows the base wind and the wind of the game every 3 seconds.
 
+## Home Assistant
+
+1. Import the [blueprint](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FSlowSoapSoak%2FSkyrimVR-ImmersiveAutomation%2Fblob%2Fmaster%2Fhomeassistant%2Fimmersive_switch.yaml) (`homeassistant/immersive_switch.yaml`).
+2. Create an automation from it, choose the mod and your device.
+3. Set `sHomeAssistantUrl=<ip of Home Assistant>` in `[GeneralModConfig]` of the ini.
+
+The plugins call the webhooks `ImmersiveWinds`, `ImmersiveHeat1` and `ImmersiveHeat2` with `?state=on` or `?state=off`. Create one automation per device.
+
 ## Http switch
 
 Set `sSwitchType=http` and the two urls. Any answer with status 2xx counts as success. Examples:
@@ -170,6 +181,7 @@ Upgrading from the test builds of *Immersive Sun*: delete `ImmersiveSunPluginScr
 |---|---|---|
 | `[GeneralModConfig]` | `bUseUdp`, `bLoggingEnabled` | `1`, `0` (as for the fan, for both TP-Link switches) |
 | | `bNoHeatInMenu` | `1` |
+| `[GeneralModConfig]` | `sHomeAssistantUrl` | address of Home Assistant, see [Home Assistant](#home-assistant) |
 | `[Switch1]`, `[Switch2]` | `sSwitchType` | `tplink` or `http` |
 | | `sPlugName` | `ImmersiveHeatPlug1`, `ImmersiveHeatPlug2` (TP-Link name in the Kasa app) |
 | | `sHttpMethod`, `sOnUrl`, `sOffUrl` | as for the fan's [http switch](#http-switch) |
