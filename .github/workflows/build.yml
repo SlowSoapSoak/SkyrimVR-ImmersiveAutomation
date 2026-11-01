@@ -48,7 +48,7 @@ jobs:
             build/ImmersiveHeat.pdb
             Winds/ImmersiveWindsVR.esp
 
-  # Immersive Winds for Fallout 4 / Fallout 4 VR, a separate CMake project in fallout4/
+  # Immersive Winds and Immersive Heat for Fallout 4 / Fallout 4 VR, a separate CMake project in fallout4/
   build-fallout4:
     runs-on: windows-latest
     timeout-minutes: 90
@@ -77,7 +77,9 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ImmersiveWindsFallout4
+          name: ImmersiveFallout4
           path: |
             fallout4/build/ImmersiveWinds.dll
             fallout4/build/ImmersiveWinds.pdb
+            fallout4/build/ImmersiveHeat.dll
+            fallout4/build/ImmersiveHeat.pdb

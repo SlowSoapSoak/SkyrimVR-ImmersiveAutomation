@@ -212,15 +212,21 @@ Upgrading from the test builds of *Immersive Sun*: delete `ImmersiveSunPluginScr
 
 ## Fallout 4 / Fallout 4 VR
 
-`fallout4/` builds Immersive Winds for Fallout 4 as `ImmersiveWinds.dll`, one DLL for Fallout 4 (1.10.163 and the next gen update 1.10.980/984) and Fallout 4 VR (1.2.72). It uses the simulated wind (see above) with the same plug code and switch settings; the anniversary update (1.11) is not supported by the library yet.
+`fallout4/` builds Immersive Winds (`ImmersiveWinds.dll`) and Immersive Heat (`ImmersiveHeat.dll`) for Fallout 4, each one DLL for Fallout 4 (1.10.163 and the next gen update 1.10.980/984) and Fallout 4 VR (1.2.72). Both use the same plug code and switch settings as the Skyrim plugins; the anniversary update (1.11) is not supported by the library yet.
 
-Requirements: [F4SE / F4SEVR](https://f4se.silverlock.org/) and the Address Library ([Fallout 4](https://www.nexusmods.com/fallout4/mods/47327), [Fallout 4 VR](https://www.nexusmods.com/fallout4/mods/64879)). Installation: copy the DLL to `Data/F4SE/Plugins`. The settings are in `Documents/My Games/Fallout4VR/F4SE/immersiveWinds.ini` (`Fallout4` for the flat game), the log is `ImmersiveWinds.log` next to it. The default plug name is the same as for Skyrim, so one fan serves both games.
+Requirements: [F4SE / F4SEVR](https://f4se.silverlock.org/) and the Address Library ([Fallout 4](https://www.nexusmods.com/fallout4/mods/47327), [Fallout 4 VR](https://www.nexusmods.com/fallout4/mods/64879)). Installation: copy the DLLs to `Data/F4SE/Plugins`. The settings are in `Documents/My Games/Fallout4VR/F4SE/immersiveWinds.ini` (`Fallout4` for the flat game), the log is `ImmersiveWinds.log` next to it. The default plug name is the same as for Skyrim, so one fan serves both games.
 
 - Outside the base wind is `fOutsideMinWind` plus the wind of the weather in the game times `fGameWindScale`, so radstorms and weather mods are followed. Inside it is `fInsideWind` (`0`).
 - Motion wind as in Skyrim: running, the vertibird and falling add wind.
 - `[GeneralModConfig]`: `sSwitchType`, `sHomeAssistantUrl`, `sPlugName`, `bUseUdp`, `bLoggingEnabled`, `bNoWindInMenu` as above; the pip-boy does not pause the game and keeps the wind. `[HttpSwitch]` and `[SimulatedWind]` as above.
 - Like in Skyrim the fan stops when the game is in the background (flat game only), stands still, or exits.
-- Not yet: the shelter detection of buildings without a load screen and Immersive Heat.
+- Not yet: the shelter detection of buildings without a load screen.
+
+**Immersive Heat** (`immersiveHeat.ini`, log `ImmersiveHeat.log`): the switches (`[Switch1]`, `[Switch2]`, `sHomeAssistantUrl`, default plug names `ImmersiveHeatPlug1` / `ImmersiveHeatPlug2`) and `iSunSwitch` / `iFireSwitch` as in Skyrim. Fallout 4 has no light level at the player, so the heat sources work differently:
+
+- **Sunlight**: outside, at day (from the climate as in Skyrim, `bClimateDayHours`, otherwise `fDayStartHour` / `fDayEndHour`), sun glare above `fMinSunGlare`, and with `bSunShadow` a ray from the head towards the sun that hits nothing: buildings, rocks and terrain cast shadow. The position of the sun is computed from the time of day (east in the morning, south at noon, west in the evening). `iSunRayLayer` (`41`, line of sight) is the collision layer of that ray; the log shows `Sun free` / `Sun blocked`.
+- **Fire nearby**: placed objects (statics, activators, furniture, lights, hazards) of the loaded cells within `fFireRadius` whose model path contains a word of `sFireModels` (`fire,flame,burning,embers,brazier,molten,lava`) and none of `sFireModelsExclude` (fire hydrants, fire escapes, fire stations, fireplaces, ...); `sSmallFireModels` (`candle`) only within `fSmallFireRadius`. The log lists every model it counts as fire.
+- **Fire hits** (`bFireHits`): a hit on the player by a weapon, projectile or ammo whose model path contains a word of `sFireWeaponModels` (`flamer,molotov,incendiar,inferno,napalm,fire,flame,burn`), or a magic effect whose art has such a word (burning), switches on right away for at least `fFireHitSeconds`. The log shows the models of every hit and effect, which helps to tune the list.
 
 Build: `cmake --preset release` and `cmake --build --preset release` in `fallout4/`, set `FALLOUT4_DATA_DIR` to deploy. It uses [CommonLibF4](https://github.com/alandtse/CommonLibF4) (submodule `extern/CommonLibF4`).
 
