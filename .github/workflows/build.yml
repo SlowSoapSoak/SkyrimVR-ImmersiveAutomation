@@ -48,6 +48,14 @@ jobs:
             build/ImmersiveHeat.pdb
             Winds/ImmersiveWindsVR.esp
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ImmersiveAlyx
+          path: |
+            build/ImmersiveAlyx.exe
+            build/ImmersiveAlyx.pdb
+            build/immersive_alyx.lua
+
   # Immersive Winds for Fallout 4 / Fallout 4 VR, a separate CMake project in fallout4/
   build-fallout4:
     runs-on: windows-latest

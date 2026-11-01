@@ -224,6 +224,37 @@ Requirements: [F4SE / F4SEVR](https://f4se.silverlock.org/) and the Address Libr
 
 Build: `cmake --preset release` and `cmake --build --preset release` in `fallout4/`, set `FALLOUT4_DATA_DIR` to deploy. It uses [CommonLibF4](https://github.com/alandtse/CommonLibF4) (submodule `extern/CommonLibF4`).
 
+## Half-Life: Alyx
+
+Half-Life: Alyx has no plugin interface like SKSE, and its Lua scripts can not reach the network. So it works in two parts:
+
+- `immersive_alyx.lua` (game script) writes the state into the console: speed of the player, outside or inside (nothing above the head within 2000 units), fire nearby (`env_fire`, burning things), explosions nearby (`env_explosion`).
+- `ImmersiveAlyx.exe` runs next to the game, reads `console.log` and switches the fan and the heat lamp. It shares the plug code and the wind simulation with the other plugins.
+
+Installation:
+
+1. Put `ImmersiveAlyx.exe` and `immersive_alyx.lua` into one folder and start the program. It finds the game in the Steam libraries, copies the script to `game\hlvr\scripts\vscripts` and adds `script_reload_code immersive_alyx.lua` to `game\hlvr\cfg\skill_manifest.cfg` (other lines there stay; `bInstallScript=0` turns this off).
+2. In Steam add the launch option `-condebug` to Half-Life: Alyx, so the game writes `console.log`.
+3. Start the program before or while playing; closing its window switches the plugs off.
+
+Settings in `immersiveAlyx.ini` next to the program, log `ImmersiveAlyx.log`:
+
+| Section | Key | Default | |
+|---|---|---|---|
+| `[GeneralModConfig]` | `sConsoleLog` | empty | path of `console.log`, empty: found in the Steam libraries |
+| | `bInstallScript` | `1` | install the game script on start |
+| | `sHomeAssistantUrl`, `bUseUdp`, `bLoggingEnabled` | | as for the game plugins; Home Assistant uses the webhooks `ImmersiveWinds` and `ImmersiveHeat1` |
+| `[Fan]`, `[Heat]` | `bEnabled` | `1` | |
+| | `sSwitchType`, `sHttpMethod`, `sOnUrl`, `sOffUrl` | | as for the game plugins |
+| | `sPlugName` | `ImmersiveWindsPlug`, `ImmersiveHeatPlug1` | the same plugs as in Skyrim and Fallout |
+| `[SimulatedWind]` | `fOutsideWind` / `fInsideWind` | `0.25` / `0` | base wind outside / inside |
+| | `fMotionStartSpeed`, `fMotionFullSpeed`, `fMotionWindMax` | `100`, `400`, `0.6` | motion wind, units (inches) per second; teleporting does not count |
+| | turbulence, gusts, fan and switch times | | as `[SimulatedWind]` of Immersive Winds |
+| `[Alyx]` | `fBlastWind`, `fBlastSeconds` | `0.8`, `2.5` | gust of an explosion nearby, fading out |
+| | `fBlastHeatSeconds` | `2` | heat flash of an explosion nearby |
+
+The heat lamp is on while a fire is within about 4 m and shortly after an explosion. Both plugs go off when the game script stops reporting (pause menu, loading, game closed). With `bLoggingEnabled=1` the program log shows every state change, explosion and the data of every hit (`player_hurt`), which is the starting point for fire damage later.
+
 ## Building
 
 Needs Visual Studio 2022 (C++ workload), vcpkg (`VCPKG_ROOT`) and the git submodules.
