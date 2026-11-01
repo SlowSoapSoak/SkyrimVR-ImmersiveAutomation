@@ -37,6 +37,8 @@ namespace ImmersiveHeatF4
 		// highest position of the sun at noon, in degrees above the horizon
 		const float SUN_NOON_ELEVATION = 60.0f;
 		const float PI = 3.14159265f;
+		// share of the climate's sunrise and sunset that gives the hours found by testing in vanilla Skyrim
+		constexpr float DAY_TRANSITION_SHARE = 0.385f;
 
 		const char * INI_INTERNAL = "Internal";
 		const char * INI_GENERAL = "GeneralModConfig";
@@ -652,7 +654,6 @@ namespace ImmersiveHeatF4
 		}
 		// TNAM: sunrise begin, sunrise end, sunset begin, sunset end, in steps of 10 minutes
 		const auto * timing = reinterpret_cast<const std::uint8_t *>(sky->currentClimate->data);
-		const float DAY_TRANSITION_SHARE = 0.385f;
 		const auto hourInTransition = [](std::uint8_t begin, std::uint8_t finish) { return (begin + DAY_TRANSITION_SHARE * (finish - begin)) / 6.0f; };
 		const float sunUp = hourInTransition(timing[0], timing[1]);
 		const float sunDown = hourInTransition(timing[2], timing[3]);
