@@ -1,10 +1,12 @@
-# Builds the SKSE plugin and deploys DLL + ESP into the local Skyrim SE/AE install.
+# Builds the SKSE plugin and deploys DLL + ESP into $env:SKYRIM_DATA_DIR (default: Data of the local Skyrim SE/AE install).
 # Usage: .\build.ps1            (after git pull)
+#        $env:SKYRIM_DATA_DIR = '<MO2>\mods\Immersive Automation'; .\build.ps1   (deploy into a Mod Organizer 2 mod, e.g. for VR)
 # Needs: VS 2022 (C++ workload), vcpkg in $env:VCPKG_ROOT (default ..\deps\vcpkg), submodules checked out.
 # no $ErrorActionPreference='Stop': PowerShell 5.1 would abort on CMake's stderr messages; exit codes are checked instead
 Set-Location $PSScriptRoot
 
-if (-not $env:VCPKG_ROOT) { $env:VCPKG_ROOT = Resolve-Path "$PSScriptRoot\..\deps\vcpkg" }
+# the VS developer shell sets VCPKG_ROOT to the vcpkg bundled with VS, whose outdated ports fail (msys2 downloads 404)
+$vcpkgRoot = if ($env:VCPKG_ROOT -and $env:VCPKG_ROOT -notmatch 'Microsoft Visual Studio') { $env:VCPKG_ROOT } else { Resolve-Path "$PSScriptRoot\..\deps\vcpkg" }
 if (-not $env:SKYRIM_DATA_DIR) {
 	$game = (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Bethesda Softworks\Skyrim Special Edition').'installed path'
 	$env:SKYRIM_DATA_DIR = Join-Path $game 'Data'
@@ -16,6 +18,7 @@ if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
 	Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
 	Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64' | Out-Null
 }
+$env:VCPKG_ROOT = $vcpkgRoot
 
 # CMake/Ninja: use installed ones, else vcpkg's portable copies (VS without the CMake component)
 foreach ($tool in 'cmake', 'ninja') {
@@ -31,9 +34,11 @@ if ($LASTEXITCODE) { exit $LASTEXITCODE }
 cmake --build --preset release
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
-# activate the ESP once (the shout needs it, the fan control works without it)
+# activate the ESP once (the shout needs it, the fan control works without it); with MO2 activate it in the profile instead
 $plugins = "$env:LOCALAPPDATA\Skyrim Special Edition\Plugins.txt"
-$active = @(Get-Content $plugins | Where-Object { $_ -notmatch '^\*?ImmersiveWindsVR\.esp$' }) + '*ImmersiveWindsVR.esp'
-Set-Content -Path $plugins -Value $active
+if (Test-Path $plugins) {
+	$active = @(Get-Content $plugins | Where-Object { $_ -notmatch '^\*?ImmersiveWindsVR\.esp$' }) + '*ImmersiveWindsVR.esp'
+	Set-Content -Path $plugins -Value $active
+}
 
 Write-Host "Deployed to $env:SKYRIM_DATA_DIR. Start the game with skse64_loader.exe."
